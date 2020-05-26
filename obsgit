@@ -1,0 +1,779 @@
+#!/usr/bin/env python3
+
+import argparse
+import asyncio
+import configparser
+import functools
+import hashlib
+import logging
+import os
+import pathlib
+import shutil
+import stat
+import sys
+import xml.etree.ElementTree as ET
+
+import aiohttp
+import chardet
+
+import pygit2
+
+LOG = logging.getLogger(__name__)
+
+
+class AsyncOBS:
+    """Minimal asynchronous interface for OBS"""
+
+    def __init__(self, url, username, password):
+        self.url = url
+        self.username = username
+
+        auth = aiohttp.BasicAuth(username, password)
+        self.client = aiohttp.ClientSession(auth=auth)
+
+    async def close(self):
+        """Close the client session"""
+
+        # This method must be called at the end of the object
+        # livecycle.  Check aiohttp documentation for details
+        if self.client:
+            await self.client.close()
+            self.client = None
+
+    async def create(self, project, package=None, disabled=False):
+        """Create a project and / or package"""
+        if await self.authorized(project) and not await self.exists(project):
+            if not disabled:
+                data = (
+                    f'<project name="{project}"><title/><description/>'
+                    f'<person userid="{self.username}" role="maintainer"/>'
+                    "</project>"
+                )
+            else:
+                data = (
+                    f'<project name="{project}"><title/><description/>'
+                    f'<person userid="{self.username}" role="maintainer"/>'
+                    "<build><disable/></build><publish><disable/></publish>"
+                    "<useforbuild><disable/></useforbuild></project>"
+                )
+            LOG.debug(f"Creating remote project {project} [disabled: {disabled}]")
+            await self.client.put(f"{self.url}/source/{project}/_meta", data=data)
+
+        if (
+            package
+            and await self.authorized(project, package)
+            and not await self.exists(project, package)
+        ):
+            if not disabled:
+                data = (
+                    f'<package name="{package}" project="{project}"><title/>'
+                    "<description/></package>"
+                )
+            else:
+                data = (
+                    f'<package name="{package}" project="{project}"><title/>'
+                    "<description/><build><disable/></build><publish><disable/>"
+                    "</publish><useforbuild><disable/></useforbuild></package>"
+                )
+            LOG.debug(
+                f"Creating remote package {project}/{package} [disabled: {disabled}]"
+            )
+            await self.client.put(
+                f"{self.url}/source/{project}/{package}/_meta", data=data
+            )
+
+    async def _download(self, url_path, filename_path, params=None):
+        LOG.debug(f"Start download {url_path} to {filename_path}")
+        async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
+            with filename_path.open("wb") as f:
+                while True:
+                    chunk = await resp.content.read(1024 * 4)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        LOG.debug(f"End download {url_path} to {filename_path}")
+
+    async def download(self, project, *path, filename_path, params=None):
+        """Download a file from a project or package"""
+        url_path = "/".join(("source", project, *path))
+        await self._download(url_path, filename_path, params=params)
+
+    async def _upload(self, url_path, filename_path=None, data=None, params=None):
+        if filename_path:
+            LOG.debug(f"Start upload {filename_path} to {url_path}")
+            with filename_path.open("rb") as f:
+                await self.client.put(f"{self.url}/{url_path}", params=params, data=f)
+            LOG.debug(f"End upload {filename_path} to {url_path}")
+        elif data:
+            LOG.debug(f"Start upload to {url_path}")
+            await self.client.put(f"{self.url}/{url_path}", params=params, data=data)
+            LOG.debug(f"End upload to {url_path}")
+
+    async def upload(self, project, *path, filename_path=None, data=None, params=None):
+        """Upload a file to a project or package"""
+        url_path = "/".join(("source", project, *path))
+        await self._upload(
+            url_path, filename_path=filename_path, data=data, params=params
+        )
+
+    async def _delete(self, url_path, params=None):
+        LOG.debug(f"Delete {url_path}")
+        await self.client.delete(f"{self.url}/{url_path}", params=params)
+
+    async def delete(self, project, *path, params=None):
+        """Delete a file, project or package"""
+        url_path = "/".join(("source", project, *path))
+        await self._delete(url_path, params=params)
+
+    async def _transfer(self, url_path, to_url_path, to_obs=None, params=None):
+        to_obs = to_obs if to_obs else self
+        LOG.debug(f"Start transfer from {url_path} to {to_url_path}")
+        resp = await self.client.get(f"{self.url}/{url_path}")
+        to_url = to_obs.url if to_obs else self.url
+        await to_obs.client.put(
+            f"{to_url}/{to_url_path}", params=params, data=resp.content
+        )
+        LOG.debug(f"End transfer from {url_path} to {to_url_path}")
+
+    async def transfer(
+        self,
+        project,
+        package,
+        filename,
+        to_project,
+        to_package=None,
+        to_filename=None,
+        to_obs=None,
+        params=None,
+    ):
+        """Copy a file between (two) OBS instances"""
+        to_package = to_package if to_package else package
+        to_filename = to_filename if to_filename else filename
+        await self._transfer(
+            f"source/{project}/{package}/{filename}",
+            f"source/{to_project}/{to_package}/{to_filename}",
+            to_obs,
+            params,
+        )
+
+    async def _xml(self, url_path, params=None):
+        async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
+            return ET.fromstring(await resp.read())
+
+    async def packages(self, project):
+        """List of packages inside an OBS project"""
+        root = await self._xml(f"source/{project}")
+        return [entry.get("name") for entry in root.findall(".//entry")]
+
+    async def files_md5_revision(self, project, package):
+        """List of (filename, md5) for a package, and the active revision"""
+        root = await self._xml(
+            f"/source/{project}/{package}", params=[("rev", "latest")]
+        )
+        if root.find(".//entry[@name='_link']") is not None:
+            revision = root.find(".//linkinfo").get("xsrcmd5")
+            root = await self._xml(
+                f"/source/{project}/{package}", params=[("rev", revision)]
+            )
+        else:
+            revision = root.get("rev")
+
+        files_md5 = [
+            (entry.get("name"), entry.get("md5")) for entry in root.findall(".//entry")
+        ]
+
+        return files_md5, revision
+
+    async def exists(self, project, package=None):
+        """Check if a project or package exists in OBS"""
+        url = (
+            f"{self.url}/source/{project}/{package}"
+            if package
+            else f"{self.url}/source/{project}"
+        )
+        async with self.client.get(url) as resp:
+            return resp.status != 404
+
+    async def authorized(self, project, package=None):
+        """Check if the user is authorized to access the project or package"""
+        url = (
+            f"{self.url}/source/{project}/{package}"
+            if package
+            else f"{self.url}/source/{project}"
+        )
+        async with self.client.get(url) as resp:
+            return resp.status != 401
+
+
+class Git:
+    """Local git reponsitory"""
+
+    def __init__(self, path):
+        self.path = pathlib.Path(path)
+
+    def exists(self):
+        """Check if the path is a valid git repository"""
+        return (self.path / ".git").exists()
+
+    def create(self):
+        """Create a local git repository"""
+        self.path.mkdir(parents=True, exist_ok=True)
+        pygit2.init_repository(self.path)
+
+    async def delete(self, package, filename=None):
+        """Delete a package or a file from a git repository"""
+        loop = asyncio.get_running_loop()
+        if filename:
+            await loop.run_in_executor(None, (self.path / package / filename).unlink)
+        else:
+            await loop.run_in_executor(None, shutil.rmtree, self.path / package)
+
+    def packages(self):
+        """List of packages in the git repository"""
+        return [
+            package.parts[-1]
+            for package in self.path.iterdir()
+            if package.is_dir() and package.parts[-1] not in (".git", ".obs")
+        ]
+
+    def _md5(self, package, filename):
+        md5 = hashlib.md5()
+        with (self.path / package / filename).open("rb") as f:
+            while True:
+                chunk = f.read(1024 * 4)
+                if not chunk:
+                    break
+                md5.update(chunk)
+        return md5.hexdigest()
+
+    async def files_md5(self, package):
+        """List of (filename, md5) for a package"""
+        loop = asyncio.get_running_loop()
+        files = [
+            file_.parts[-1]
+            for file_ in (self.path / package).iterdir()
+            if file_.is_file()
+        ]
+        md5s = await asyncio.gather(
+            *(
+                loop.run_in_executor(None, self._md5, package, filename)
+                for filename in files
+            )
+        )
+        return zip(files, md5s)
+
+
+class Storage:
+    """File storage in OBS"""
+
+    async def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+        await instance.__init__(*args, **kwargs)
+        return instance
+
+    async def __init__(self, obs, storage):
+        self.obs = obs
+        self.project, self.package = pathlib.Path(storage).parts
+        self.index = set()
+
+        files_md5, _ = await self.obs.files_md5_revision(self.project, self.package)
+        for filename, md5 in files_md5:
+            assert filename == md5, f"Storage {self.project}/{self.package} not valid"
+            self.index.add(filename)
+
+    async def transfer(self, md5, project, package, filename, obs):
+        """Copy a file to the file storage from a remote OBS"""
+        assert (
+            md5 in self.index
+        ), f"File {package}/{filename} ({md5}) missing from storage"
+        await self.obs.transfer(
+            self.project, self.package, md5, project, package, filename, obs,
+        )
+
+
+class Exporter:
+    """Export projects and packages from OBS to git"""
+
+    def __init__(self, obs, git, storage):
+        self.obs = obs
+        self.git = git
+        self.storage = storage
+
+    @staticmethod
+    def is_binary(filename):
+        """Use some heuristics to detect if a file is binary"""
+        binary = {
+            ".xz",
+            ".gz",
+            ".bz2",
+            ".zip",
+            ".gem",
+            ".tgz",
+            ".png",
+            ".pdf",
+            ".jar",
+            ".oxt",
+            ".whl",
+            ".rpm",
+        }
+        non_binary_exceptions = {".obscpio"}
+        non_binary = {
+            ".changes",
+            ".spec",
+            ".patch",
+            ".diff",
+            ".conf",
+            ".yml",
+            ".keyring",
+            ".sig",
+            ".sh",
+            ".dif",
+            ".txt",
+            ".service",
+            ".asc",
+            ".cabal",
+            ".desktop",
+            ".xml",
+            ".pom",
+            ".SUSE",
+            ".in",
+            ".obsinfo",
+            ".1",
+            ".init",
+            ".kiwi",
+            ".rpmlintrc",
+            ".rules",
+            ".py",
+            ".sysconfig",
+            ".logrotate",
+            ".pl",
+            ".dsc",
+            ".c",
+            ".install",
+            ".8",
+            ".md",
+            ".html",
+            ".script",
+            ".xml",
+            ".test",
+            ".cfg",
+            ".el",
+            ".pamd",
+            ".sign",
+            ".macros",
+        }
+
+        # Shortcut the detection based on the file extension
+        suffix = pathlib.Path(filename).suffix
+        if suffix in binary or suffix in non_binary_exceptions:
+            return True
+        if suffix in non_binary:
+            return False
+
+        # Read a chunk of the file and try to determine the encoding, if
+        # the confidence is low we assume binary
+        with filename.open("rb") as f:
+            encoding = chardet.detect(f.read(1024 * 4))
+        return encoding["confidence"] < 0.8
+
+    async def project(self, project):
+        """Export a project from OBS to git"""
+        packages_obs = set(await self.obs.packages(project))
+        packages_git = set(self.git.packages())
+        packages_delete = packages_git - packages_obs
+
+        await asyncio.gather(
+            self.project_metadata(project),
+            *(self.package(project, package) for package in packages_obs),
+            *(self.git.delete(package) for package in packages_delete),
+        )
+
+    async def project_metadata(self, project):
+        """Export the project metadata from OBS to git"""
+        metadata_path = self.git.path / ".obs"
+        metadata_path.mkdir(exist_ok=True)
+
+        metadata = (
+            "_meta",
+            "_project",
+            "_attribute",
+            "_config",
+            "_pattern",
+        )
+        await asyncio.gather(
+            *(
+                self.obs.download(project, meta, filename_path=metadata_path / meta)
+                for meta in metadata
+            )
+        )
+
+    async def package(self, project, package):
+        """Export a package from OBS to git"""
+        package_path = self.git.path / package
+        package_path.mkdir(exist_ok=True)
+
+        # We do not know, before downloading, if a file is binary or
+        # text.  The strategy for now is to download all the files
+        # (except the ones already in the remote storage or in git),
+        # and upload later the ones that are binary.  We need to
+        # remove those after that
+
+        files_md5_obs, revision = await self.obs.files_md5_revision(project, package)
+        files_md5_obs = set(files_md5_obs)
+        files_md5_git = set(await self.git.files_md5(package))
+        files_md5_obs_store = [
+            (filename, md5)
+            for filename, md5 in files_md5_obs
+            if md5 in self.storage.index
+        ]
+
+        # TODO: one optimization is to detect the files that are
+        # stored in the local "files" cache, that we already know that
+        # are binary, and do a transfer if the MD5 is different
+        files_download = {
+            filename
+            for filename, md5 in (files_md5_obs - files_md5_git)
+            if md5 not in self.storage.index
+        }
+
+        files_obs = {filename for filename, _ in files_md5_obs}
+        files_git = {filename for filename, _ in files_md5_git}
+        files_delete = files_git - files_obs
+
+        await asyncio.gather(
+            self.package_metadata(project, package),
+            *(
+                self.obs.download(
+                    project,
+                    package,
+                    filename,
+                    filename_path=package_path / filename,
+                    params=[("rev", revision)],
+                )
+                for filename in files_download
+            ),
+            *(self.git.delete(package, filename) for filename in files_delete),
+        )
+
+        # Once we download the full package, we store the new binary files
+        files_md5_store = [
+            (filename, md5)
+            for filename, md5 in files_md5_obs
+            if filename in files_download
+            and Exporter.is_binary(package_path / filename)
+        ]
+
+        await asyncio.gather(
+            *(
+                self.obs.upload(
+                    self.storage.project,
+                    self.storage.package,
+                    md5,
+                    filename_path=package_path / filename,
+                )
+                for filename, md5 in files_md5_store
+            )
+        )
+        await asyncio.gather(
+            *(self.git.delete(package, filename) for filename, _ in files_md5_store)
+        )
+
+        with (package_path / ".obs" / "files").open("w") as f:
+            f.writelines(
+                f"{filename}\t\t{md5}\n"
+                for filename, md5 in sorted(files_md5_obs_store + files_md5_store)
+            )
+
+    async def package_metadata(self, project, package):
+        metadata_path = self.git.path / package / ".obs"
+        metadata_path.mkdir(exist_ok=True)
+
+        metadata = (
+            "_meta",
+            "_attribute",
+            "_history",
+        )
+        await asyncio.gather(
+            *(
+                self.obs.download(
+                    project, package, meta, filename_path=metadata_path / meta
+                )
+                for meta in metadata
+            )
+        )
+
+
+class Importer:
+    def __init__(self, obs, git, storage):
+        self.obs = obs
+        self.git = git
+        self.storage = storage
+
+    @functools.lru_cache
+    def project_name(self):
+        metadata_path = self.git.path / ".obs" / "_meta"
+        return ET.parse(metadata_path).getroot().get("name")
+
+    def replace_project(self, metadata_path, project):
+        with metadata_path.open() as f:
+            return f.read().replace(self.project_name(), project)
+
+    async def project_metadata(self, project):
+        metadata_path = self.git.path / ".obs"
+
+        metadata = (
+            "_meta",
+            "_project",
+            "_attribute",
+            "_config",
+            "_pattern",
+        )
+        await asyncio.gather(
+            *(
+                self.obs.upload(
+                    project,
+                    meta,
+                    data=self.replace_project(metadata_path / meta, project),
+                )
+                for meta in metadata
+            )
+        )
+
+    async def project(self, project):
+        # TODO: What if the project in OBS is more modern? Is there a
+        # way to detect it?
+
+        # First import the project metadata, as a side effect can
+        # create the project
+        await self.project_metadata(project)
+
+        packages_obs = set(await self.obs.packages(project))
+        packages_git = set(self.git.packages())
+        packages_delete = packages_obs - packages_git
+
+        await asyncio.gather(
+            *(self.package(project, package) for package in packages_git),
+            *(self.obs.delete(project, package) for package in packages_delete),
+        )
+
+    async def package_metadata(self, project, package):
+        metadata_path = self.git.path / package / ".obs"
+        metadata = (
+            "_meta",
+            "_attribute",
+            # "_history",
+        )
+        await asyncio.gather(
+            *(
+                self.obs.upload(
+                    project,
+                    package,
+                    meta,
+                    data=self.replace_project(metadata_path / meta, project),
+                )
+                for meta in metadata
+            )
+        )
+
+    async def package(self, project, package):
+        await self.package_metadata(project, package)
+
+        package_path = self.git.path / package
+
+        files_md5_obs, _ = await self.obs.files_md5_revision(project, package)
+        files_md5_obs = set(files_md5_obs)
+        files_md5_git = set(await self.git.files_md5(package))
+        with (package_path / ".obs" / "files").open() as f:
+            files_md5_git_store = {tuple(line.split()) for line in f.readlines()}
+
+        files_md5_upload = files_md5_git - files_md5_obs
+        files_md5_transfer = files_md5_git_store - files_md5_obs
+
+        files_obs = {filename for filename, _ in files_md5_obs}
+        files_git = {filename for filename, _ in files_md5_git}
+        files_git_store = {filename for filename, _ in files_md5_git_store}
+        files_delete = files_obs - files_git - files_git_store
+
+        await asyncio.gather(
+            *(
+                self.obs.upload(
+                    project, package, filename, filename_path=package_path / filename,
+                )
+                for filename, _ in files_md5_upload
+            ),
+            *(
+                self.storage.transfer(md5, project, package, filename, self.obs)
+                for filename, md5 in files_md5_transfer
+            ),
+            *(self.obs.delete(project, package, filename) for filename in files_delete),
+        )
+
+
+def read_config(config_filename, url=None, username=None, password=None):
+    """Read a configuration file in INI format"""
+    if not config_filename:
+        print("Configuration file not provided")
+        sys.exit(-1)
+
+    config = configparser.ConfigParser()
+
+    if pathlib.Path(config_filename).exists():
+        config.read(config_filename)
+        if url:
+            config["import"]["url"] = url
+            config["export"]["url"] = url
+        if username:
+            config["import"]["username"] = username
+            config["export"]["username"] = username
+        if password:
+            config["import"]["password"] = password
+            config["export"]["password"] = password
+    else:
+        print(
+            "Configuration file does not exist, creating a template "
+            f"in {config_filename}"
+        )
+        username = username if username else os.getlogin()
+        config["import"] = {
+            "url": url if url else "https://api.opensuse.org",
+            "username": username,
+            "password": password if password else "password",
+        }
+        config["export"] = {
+            "url": url if url else "https://api.opensuse.org",
+            "username": username,
+            "password": password if password else "password",
+            "storage": f"home:{username}:storage/files",
+        }
+        with config_filename.open("w") as f:
+            config.write(f)
+
+        # Only the user can read and write the file
+        config_filename.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    return config
+
+
+async def export(args, config):
+    project = args.project
+    repository = pathlib.Path(args.repository).expanduser().absolute().resolve()
+    package = args.package
+
+    obs = AsyncOBS(
+        config["export"]["url"],
+        config["export"]["username"],
+        config["export"]["password"],
+    )
+    if not await obs.authorized(project, package):
+        print("No authorization to access project or package in OBS")
+        sys.exit(-1)
+    if not await obs.exists(project, package):
+        print("Project or package not found in OBS")
+        sys.exit(-1)
+
+    git = Git(repository)
+    git.create()
+
+    storage = await Storage(obs, config["export"]["storage"])
+    await obs.create(storage.project, storage.package, disabled=True)
+
+    exporter = Exporter(obs, git, storage)
+    if package:
+        await exporter.package(project, package)
+    else:
+        await exporter.project(project)
+    await obs.close()
+
+
+async def import_(args, config):
+    repository = pathlib.Path(args.repository).expanduser().absolute().resolve()
+    project = args.project
+    package = args.package
+
+    obs = AsyncOBS(
+        config["import"]["url"],
+        config["import"]["username"],
+        config["import"]["password"],
+    )
+
+    git = Git(repository)
+    if not git.exists():
+        print("Project or package not found in OBS")
+        sys.exit(-1)
+
+    storage_obs = AsyncOBS(
+        config["export"]["url"],
+        config["export"]["username"],
+        config["export"]["password"],
+    )
+    if not await storage_obs.authorized(project, package):
+        print("No authorization to access the file storage in OBS")
+        sys.exit(-1)
+    if not await storage_obs.exists(project, package):
+        print("File storage not found in OBS")
+        sys.exit(-1)
+
+    storage = await Storage(storage_obs, config["export"]["storage"])
+
+    importer = Importer(obs, git, storage)
+    if package:
+        await importer.package(project, package)
+    else:
+        await importer.project(project)
+    await obs.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="OBS-git simple bridge tool")
+    parser.add_argument(
+        "--config",
+        "-c",
+        default=pathlib.Path("~", ".obsgit").expanduser(),
+        help="configuration file",
+    )
+    parser.add_argument(
+        "--level", "-l", help="logging level",
+    )
+    parser.add_argument(
+        "--api", "-a", help="url for the api",
+    )
+    parser.add_argument(
+        "--username", "-u", help="username for login",
+    )
+    parser.add_argument(
+        "--password", "-p", help="password for login",
+    )
+
+    subparser = parser.add_subparsers()
+
+    parser_export = subparser.add_parser("export", help="export between OBS and git")
+    parser_export.add_argument("project", help="OBS project name")
+    parser_export.add_argument(
+        "repository", nargs="?", default=".", help="Git repository directory"
+    )
+    parser_export.add_argument("--package", "-p", help="OBS package name")
+    parser_export.set_defaults(func=export)
+
+    parser_import = subparser.add_parser("import", help="import between git and OBS")
+    parser_import.add_argument(
+        "repository", nargs="?", default=".", help="Git repository directory"
+    )
+    parser_import.add_argument("project", help="OBS project name")
+    parser_import.add_argument("--package", "-p", help="OBS package name")
+    parser_import.set_defaults(func=import_)
+
+    args = parser.parse_args()
+
+    if args.level:
+        numeric_level = getattr(logging, args.level.upper(), None)
+        if not isinstance(numeric_level, int):
+            print(f"Invalid log level: {args.level}")
+            sys.exit(-1)
+        logging.basicConfig(level=numeric_level)
+
+    if "func" not in args:
+        parser.print_help()
+        sys.exit(-1)
+
+    config = read_config(args.config, args.api, args.username, args.password)
+    asyncio.run(args.func(args, config))
