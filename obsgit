@@ -206,7 +206,7 @@ class AsyncOBS:
 
 
 class Git:
-    """Local git reponsitory"""
+    """Local git repository"""
 
     def __init__(self, path):
         self.path = pathlib.Path(path)
