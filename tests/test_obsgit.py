@@ -400,6 +400,43 @@ class TestGit(unittest.IsolatedAsyncioTestCase):
             )
 
 
+class TestStorage(unittest.IsolatedAsyncioTestCase):
+    async def test_storage(self):
+        obs = obsgit.AsyncOBS("https://api.example.local", "user", "secret")
+        with unittest.mock.patch.object(
+            obs, "files_md5_revision"
+        ) as obs_files_md5_revision:
+            obs_files_md5_revision.return_value = (
+                [("md51", "md51"), ("md52", "md52")],
+                None,
+            )
+            storage = await obsgit.Storage(obs, "project/package")
+
+        self.assertEqual(storage.project, "project")
+        self.assertEqual(storage.package, "package")
+        self.assertEqual(storage.index, {"md51", "md52"})
+        await obs.close()
+
+    async def test_transfer(self):
+        obs = obsgit.AsyncOBS("https://api.example.local", "user", "secret")
+        with unittest.mock.patch.object(
+            obs, "files_md5_revision"
+        ) as obs_files_md5_revision:
+            obs_files_md5_revision.return_value = (
+                [("md51", "md51"), ("md52", "md52")],
+                None,
+            )
+            storage = await obsgit.Storage(obs, "project/package")
+
+        with unittest.mock.patch.object(obs, "transfer") as obs_transfer:
+            await storage.transfer("md51", "myproject", "mypackage", "myfile", obs)
+            obs_transfer.assert_called_once_with(
+                "project", "package", "md51", "myproject", "mypackage", "myfile", obs
+            )
+
+        await obs.close()
+
+
 class TestExporterIsBinary(unittest.TestCase):
     unknown_filename = pathlib.Path("/tmp/unknown")
 

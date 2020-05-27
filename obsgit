@@ -211,6 +211,7 @@ class Git:
     def __init__(self, path):
         self.path = pathlib.Path(path)
 
+    # TODO: Extend it to packages and files
     def exists(self):
         """Check if the path is a valid git repository"""
         return (self.path / ".git").exists()
@@ -271,6 +272,7 @@ class Storage:
         await instance.__init__(*args, **kwargs)
         return instance
 
+    # TODO: change the signature to accept the project and package
     async def __init__(self, obs, storage):
         self.obs = obs
         self.project, self.package = pathlib.Path(storage).parts
@@ -281,6 +283,10 @@ class Storage:
             assert filename == md5, f"Storage {self.project}/{self.package} not valid"
             self.index.add(filename)
 
+    # TODO: Implement transfer as a bidirectional API only for
+    # storage, and from in from AsyncOBS.  Express in in terms of
+    # copypac internally, without affecting the `files` metadata not
+    # the generic interface
     async def transfer(self, md5, project, package, filename, obs):
         """Copy a file to the file storage from a remote OBS"""
         assert (
