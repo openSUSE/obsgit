@@ -472,5 +472,189 @@ class TestExporterIsBinary(unittest.TestCase):
         self.assertFalse(obsgit.Exporter.is_binary(self.unknown_filename))
 
 
+class TestExporter(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.obs = obsgit.AsyncOBS("https://api.example.local", "user", "secret")
+        with unittest.mock.patch.object(
+            self.obs, "files_md5_revision", return_value=[(), None]
+        ):
+            self.storage = await obsgit.Storage(self.obs, "project/package")
+        self.git = obsgit.Git("/tmp/git")
+        self.exporter = obsgit.Exporter(self.obs, self.git, self.storage)
+
+    async def asyncTearDown(self):
+        await self.obs.close()
+
+    async def test_project(self):
+        packages_obs = ["package1", "package2"]
+        packages_git = ["package2", "package3"]
+        self.obs.packages = unittest.mock.AsyncMock(return_value=packages_obs)
+        self.git.packages = unittest.mock.MagicMock(return_value=packages_git)
+
+        self.exporter.project_metadata = unittest.mock.AsyncMock()
+        self.exporter.package = unittest.mock.AsyncMock()
+        self.git.delete = unittest.mock.AsyncMock()
+
+        await self.exporter.project("myproject")
+
+        self.exporter.project_metadata.assert_called_once_with("myproject")
+        self.exporter.package.assert_has_calls(
+            [
+                unittest.mock.call("myproject", "package1"),
+                unittest.mock.call("myproject", "package2"),
+            ],
+            any_order=True,
+        )
+        self.git.delete.assert_called_once_with("package3")
+
+    async def test_project_metadata(self):
+        self.obs.download = unittest.mock.AsyncMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            self.git.path = tmp
+
+            await self.exporter.project_metadata("myproject")
+
+            self.assertTrue((tmp / ".obs").exists())
+
+        self.obs.download.assert_has_calls(
+            [
+                unittest.mock.call(
+                    "myproject", "_meta", filename_path=(tmp / ".obs" / "_meta")
+                ),
+                unittest.mock.call(
+                    "myproject", "_project", filename_path=(tmp / ".obs" / "_project")
+                ),
+                unittest.mock.call(
+                    "myproject",
+                    "_attribute",
+                    filename_path=(tmp / ".obs" / "_attribute")
+                ),
+                unittest.mock.call(
+                    "myproject", "_config", filename_path=(tmp / ".obs" / "_config")
+                ),
+                unittest.mock.call(
+                    "myproject", "_pattern", filename_path=(tmp / ".obs" / "_pattern")
+                ),
+            ],
+            any_order=True,
+        )
+
+    async def test_package(self):
+        files_md5_obs = (
+            [("file1", "md51"), ("file2", "md52"), ("file3", "md531")],
+            "revision",
+        )
+        files_md5_git = [("file2", "md52"), ("file3", "md532"), ("file4", "md54")]
+        store_index = {"md52"}
+        is_binary = {"file1", "file2"}
+
+        self.obs.files_md5_revision = unittest.mock.AsyncMock(
+            return_value=files_md5_obs
+        )
+        self.git.files_md5 = unittest.mock.AsyncMock(return_value=files_md5_git)
+        self.storage.index = store_index
+
+        self.exporter.package_metadata = unittest.mock.AsyncMock()
+        self.obs.download = unittest.mock.AsyncMock()
+        self.obs.upload = unittest.mock.AsyncMock()
+        self.git.delete = unittest.mock.AsyncMock()
+
+        with unittest.mock.patch.object(
+            obsgit.Exporter,
+            "is_binary",
+            side_effect=lambda x: x.parts[-1] in is_binary,
+        ) as exporter_is_binary:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = pathlib.Path(tmp)
+                self.git.path = tmp
+                (tmp / "mypackage" / ".obs").mkdir(parents=True)
+
+                await self.exporter.package("myproject", "mypackage")
+
+                self.assertTrue((self.git.path / "mypackage").exists())
+                self.exporter.package_metadata.assert_called_once_with(
+                    "myproject", "mypackage"
+                )
+                self.obs.download.assert_has_calls(
+                    [
+                        unittest.mock.call(
+                            "myproject",
+                            "mypackage",
+                            "file1",
+                            filename_path=tmp / "mypackage" / "file1",
+                            params=[("rev", "revision")],
+                        ),
+                        unittest.mock.call(
+                            "myproject",
+                            "mypackage",
+                            "file3",
+                            filename_path=tmp / "mypackage" / "file3",
+                            params=[("rev", "revision")],
+                        ),
+                    ],
+                    any_order=True,
+                )
+                self.git.delete.assert_has_calls(
+                    [
+                        unittest.mock.call("mypackage", "file4"),
+                        # Remove because is a binary file
+                        unittest.mock.call("mypackage", "file1"),
+                    ]
+                )
+                exporter_is_binary.assert_has_calls(
+                    [
+                        unittest.mock.call(tmp / "mypackage" / "file1"),
+                        unittest.mock.call(tmp / "mypackage" / "file3"),
+                    ],
+                    any_order=True,
+                )
+                self.obs.upload.assert_called_once_with(
+                    "project",
+                    "package",
+                    "md51",
+                    filename_path=(tmp / "mypackage" / "file1"),
+                )
+                with (tmp / "mypackage" / ".obs" / "files").open() as files:
+                    self.assertEqual(files.read(), "file1\t\tmd51\nfile2\t\tmd52\n")
+
+    async def test_package_metadata(self):
+        self.obs.download = unittest.mock.AsyncMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            self.git.path = tmp
+            (tmp / "mypackage").mkdir()
+
+            await self.exporter.package_metadata("myproject", "mypackage")
+
+            self.assertTrue((tmp / "mypackage" / ".obs").exists())
+
+        self.obs.download.assert_has_calls(
+            [
+                unittest.mock.call(
+                    "myproject",
+                    "mypackage",
+                    "_meta",
+                    filename_path=(tmp / "mypackage" / ".obs" / "_meta"),
+                ),
+                unittest.mock.call(
+                    "myproject",
+                    "mypackage",
+                    "_attribute",
+                    filename_path=(tmp / "mypackage" / ".obs" / "_attribute"),
+                ),
+                unittest.mock.call(
+                    "myproject",
+                    "mypackage",
+                    "_history",
+                    filename_path=(tmp / "mypackage" / ".obs" / "_history"),
+                ),
+            ],
+            any_order=True,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
