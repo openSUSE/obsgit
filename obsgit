@@ -670,11 +670,13 @@ async def export(args, config):
         config["export"]["username"],
         config["export"]["password"],
     )
+
     if not await obs.authorized(project, package):
-        print("No authorization to access project or package in OBS")
+        print("No authorization to access project or package in build service")
         sys.exit(-1)
+
     if not await obs.exists(project, package):
-        print("Project or package not found in OBS")
+        print("Project or package not found in build service")
         sys.exit(-1)
 
     git = Git(repository)
@@ -688,6 +690,7 @@ async def export(args, config):
         await exporter.package(project, package)
     else:
         await exporter.project(project)
+
     await obs.close()
 
 
@@ -704,7 +707,7 @@ async def import_(args, config):
 
     git = Git(repository)
     if not git.exists():
-        print("Project or package not found in OBS")
+        print("Project or package not found in build service")
         sys.exit(-1)
 
     storage_obs = AsyncOBS(
@@ -712,20 +715,23 @@ async def import_(args, config):
         config["export"]["username"],
         config["export"]["password"],
     )
-    if not await storage_obs.authorized(project, package):
-        print("No authorization to access the file storage in OBS")
-        sys.exit(-1)
-    if not await storage_obs.exists(project, package):
-        print("File storage not found in OBS")
-        sys.exit(-1)
 
     storage = await Storage(storage_obs, config["export"]["storage"])
+
+    if not await storage_obs.authorized(storage.project, storage.package):
+        print("No authorization to access the file storage in build service")
+        sys.exit(-1)
+
+    if not await storage_obs.exists(storage.project, storage.package):
+        print("File storage not found in build service")
+        sys.exit(-1)
 
     importer = Importer(obs, git, storage)
     if package:
         await importer.package(project, package)
     else:
         await importer.project(project)
+
     await obs.close()
 
 
