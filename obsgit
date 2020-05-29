@@ -28,8 +28,9 @@ class AsyncOBS:
         self.url = url
         self.username = username
 
+        conn = aiohttp.TCPConnector(limit=5, limit_per_host=5)
         auth = aiohttp.BasicAuth(username, password)
-        self.client = aiohttp.ClientSession(auth=auth)
+        self.client = aiohttp.ClientSession(connector=conn, auth=auth)
 
     async def close(self):
         """Close the client session"""
@@ -524,6 +525,34 @@ class Importer:
         with metadata_path.open() as f:
             return f.read().replace(self.project_name(), project)
 
+    async def project(self, project):
+        # TODO: What if the project in OBS is more modern? Is there a
+        # way to detect it?
+
+        # First import the project metadata, as a side effect can
+        # create the project
+        await self.project_metadata(project)
+
+        packages_obs = set(await self.obs.packages(project))
+        packages_git = set(self.git.packages())
+        packages_delete = packages_obs - packages_git
+
+        # To avoid stressing OBS / IBS we group the imports
+        group_size = 4
+        packages_git = list(packages_git)
+        packages_git_groups = [
+            packages_git[i : i + group_size]
+            for i in range(0, len(packages_git), group_size)
+        ]
+        for packages_git_group in packages_git_groups:
+            await asyncio.gather(
+                *(self.package(project, package) for package in packages_git_group),
+            )
+
+        await asyncio.gather(
+            *(self.obs.delete(project, package) for package in packages_delete),
+        )
+
     async def project_metadata(self, project):
         metadata_path = self.git.path / ".obs"
 
@@ -538,42 +567,6 @@ class Importer:
             *(
                 self.obs.upload(
                     project,
-                    meta,
-                    data=self.replace_project(metadata_path / meta, project),
-                )
-                for meta in metadata
-            )
-        )
-
-    async def project(self, project):
-        # TODO: What if the project in OBS is more modern? Is there a
-        # way to detect it?
-
-        # First import the project metadata, as a side effect can
-        # create the project
-        await self.project_metadata(project)
-
-        packages_obs = set(await self.obs.packages(project))
-        packages_git = set(self.git.packages())
-        packages_delete = packages_obs - packages_git
-
-        await asyncio.gather(
-            *(self.package(project, package) for package in packages_git),
-            *(self.obs.delete(project, package) for package in packages_delete),
-        )
-
-    async def package_metadata(self, project, package):
-        metadata_path = self.git.path / package / ".obs"
-        metadata = (
-            "_meta",
-            "_attribute",
-            # "_history",
-        )
-        await asyncio.gather(
-            *(
-                self.obs.upload(
-                    project,
-                    package,
                     meta,
                     data=self.replace_project(metadata_path / meta, project),
                 )
@@ -612,6 +605,25 @@ class Importer:
                 for filename, md5 in files_md5_transfer
             ),
             *(self.obs.delete(project, package, filename) for filename in files_delete),
+        )
+
+    async def package_metadata(self, project, package):
+        metadata_path = self.git.path / package / ".obs"
+        metadata = (
+            "_meta",
+            "_attribute",
+            # "_history",
+        )
+        await asyncio.gather(
+            *(
+                self.obs.upload(
+                    project,
+                    package,
+                    meta,
+                    data=self.replace_project(metadata_path / meta, project),
+                )
+                for meta in metadata
+            )
         )
 
 
