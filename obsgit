@@ -708,6 +708,13 @@ def read_config(config_filename, url=None, username=None, password=None):
             "url": url if url else "https://api.opensuse.org",
             "username": username,
             "password": password if password else "password",
+        }
+        config["storage"] = {
+            # "type": {"lfs", "obs"}
+            "type": "obs",
+            "url": url if url else "https://api.opensuse.org",
+            "username": username,
+            "password": password if password else "password",
             "storage": f"home:{username}:storage/files",
         }
         with config_filename.open("w") as f:
@@ -741,8 +748,16 @@ async def export(args, config):
     git = Git(repository)
     git.create()
 
-    storage = await StorageOBS(obs, config["export"]["storage"])
-    await obs.create(storage.project, storage.package, disabled=True)
+    if config["storage"]["type"] == "obs":
+        storage_obs = AsyncOBS(
+            config["storage"]["url"],
+            config["storage"]["username"],
+            config["storage"]["password"],
+        )
+        storage = await StorageOBS(storage_obs, config["storage"]["storage"])
+        await storage_obs.create(storage.project, storage.package, disabled=True)
+    else:
+        raise NotImplementedError("LFS storage not implemented")
 
     exporter = Exporter(obs, git, storage)
     if package:
@@ -750,6 +765,7 @@ async def export(args, config):
     else:
         await exporter.project(project)
 
+    await storage_obs.close()
     await obs.close()
 
 
@@ -769,13 +785,15 @@ async def import_(args, config):
         print("Project or package not found in build service")
         sys.exit(-1)
 
-    storage_obs = AsyncOBS(
-        config["export"]["url"],
-        config["export"]["username"],
-        config["export"]["password"],
-    )
-
-    storage = await StorageOBS(storage_obs, config["export"]["storage"])
+    if config["storage"]["type"] == "obs":
+        storage_obs = AsyncOBS(
+            config["storage"]["url"],
+            config["storage"]["username"],
+            config["storage"]["password"],
+        )
+        storage = await StorageOBS(storage_obs, config["storage"]["storage"])
+    else:
+        raise NotImplementedError("LFS storage not implemented")
 
     if not await storage_obs.authorized(storage.project, storage.package):
         print("No authorization to access the file storage in build service")
