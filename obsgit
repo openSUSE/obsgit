@@ -83,7 +83,7 @@ class AsyncOBS:
                 f"{self.url}/source/{project}/{package}/_meta", data=data
             )
 
-    async def _download(self, url_path, filename_path, params=None):
+    async def _download(self, url_path, filename_path, **params):
         LOG.debug(f"Start download {url_path} to {filename_path}")
         async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
             with filename_path.open("wb") as f:
@@ -94,45 +94,53 @@ class AsyncOBS:
                     f.write(chunk)
         LOG.debug(f"End download {url_path} to {filename_path}")
 
-    async def download(self, project, *path, filename_path, params=None):
+    async def download(self, project, *path, filename_path, **params):
         """Download a file from a project or package"""
         url_path = "/".join(("source", project, *path))
-        await self._download(url_path, filename_path, params=params)
+        await self._download(url_path, filename_path, **params)
 
-    async def _upload(self, url_path, filename_path=None, data=None, params=None):
+    async def _upload(self, url_path, filename_path=None, data=None, **params):
         if filename_path:
             LOG.debug(f"Start upload {filename_path} to {url_path}")
             with filename_path.open("rb") as f:
-                await self.client.put(f"{self.url}/{url_path}", params=params, data=f)
+                await self.client.put(f"{self.url}/{url_path}", data=f, params=params)
             LOG.debug(f"End upload {filename_path} to {url_path}")
         elif data:
             LOG.debug(f"Start upload to {url_path}")
-            await self.client.put(f"{self.url}/{url_path}", params=params, data=data)
+            await self.client.put(f"{self.url}/{url_path}", data=data, params=params)
             LOG.debug(f"End upload to {url_path}")
 
-    async def upload(self, project, *path, filename_path=None, data=None, params=None):
+    async def upload(self, project, *path, filename_path=None, data=None, **params):
         """Upload a file to a project or package"""
         url_path = "/".join(("source", project, *path))
-        await self._upload(
-            url_path, filename_path=filename_path, data=data, params=params
-        )
+        await self._upload(url_path, filename_path=filename_path, data=data, **params)
 
-    async def _delete(self, url_path, params=None):
+    async def _delete(self, url_path, **params):
         LOG.debug(f"Delete {url_path}")
         await self.client.delete(f"{self.url}/{url_path}", params=params)
 
-    async def delete(self, project, *path, params=None):
+    async def delete(self, project, *path, **params):
         """Delete a file, project or package"""
         url_path = "/".join(("source", project, *path))
-        await self._delete(url_path, params=params)
+        await self._delete(url_path, **params)
 
-    async def _transfer(self, url_path, to_url_path, to_obs=None, params=None):
+    async def _command(self, url_path, cmd, **params):
+        LOG.debug(f"Command {cmd} to {url_path}")
+        params["cmd"] = cmd
+        await self.client.post(f"{self.url}/{url_path}", params=params)
+
+    async def command(self, project, *path, cmd, **params):
+        """Send a command to a project or package"""
+        url_path = "/".join(("source", project, *path))
+        await self._command(url_path, cmd, **params)
+
+    async def _transfer(self, url_path, to_url_path, to_obs=None, **params):
         to_obs = to_obs if to_obs else self
         LOG.debug(f"Start transfer from {url_path} to {to_url_path}")
         resp = await self.client.get(f"{self.url}/{url_path}")
         to_url = to_obs.url if to_obs else self.url
         await to_obs.client.put(
-            f"{to_url}/{to_url_path}", params=params, data=resp.content
+            f"{to_url}/{to_url_path}", data=resp.content, params=params
         )
         LOG.debug(f"End transfer from {url_path} to {to_url_path}")
 
@@ -145,7 +153,7 @@ class AsyncOBS:
         to_package=None,
         to_filename=None,
         to_obs=None,
-        params=None,
+        **params,
     ):
         """Copy a file between (two) OBS instances"""
         to_package = to_package if to_package else package
@@ -154,10 +162,10 @@ class AsyncOBS:
             f"source/{project}/{package}/{filename}",
             f"source/{to_project}/{to_package}/{to_filename}",
             to_obs,
-            params,
+            **params,
         )
 
-    async def _xml(self, url_path, params=None):
+    async def _xml(self, url_path, **params):
         async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
             return ET.fromstring(await resp.read())
 
@@ -168,14 +176,10 @@ class AsyncOBS:
 
     async def files_md5_revision(self, project, package):
         """List of (filename, md5) for a package, and the active revision"""
-        root = await self._xml(
-            f"/source/{project}/{package}", params=[("rev", "latest")]
-        )
+        root = await self._xml(f"/source/{project}/{package}", rev="latest")
         if root.find(".//entry[@name='_link']") is not None:
             revision = root.find(".//linkinfo").get("xsrcmd5")
-            root = await self._xml(
-                f"/source/{project}/{package}", params=[("rev", revision)]
-            )
+            root = await self._xml(f"/source/{project}/{package}", rev=revision)
         else:
             revision = root.get("rev")
 
@@ -460,7 +464,7 @@ class Exporter:
                     package,
                     filename,
                     filename_path=package_path / filename,
-                    params=[("rev", revision)],
+                    rev=revision,
                 )
                 for filename in files_download
             ),
@@ -482,6 +486,7 @@ class Exporter:
                     self.storage.package,
                     md5,
                     filename_path=package_path / filename,
+                    rev="repository",
                 )
                 for filename, md5 in files_md5_store
             )
