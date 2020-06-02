@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import configparser
+import datetime
 import functools
 import hashlib
 import logging
@@ -44,6 +45,7 @@ class AsyncOBS:
     async def create(self, project, package=None, disabled=False):
         """Create a project and / or package"""
         if await self.authorized(project) and not await self.exists(project):
+            # TODO: generate the XML via ElementTree and ET.dump(root)
             if not disabled:
                 data = (
                     f'<project name="{project}"><title/><description/>'
@@ -124,15 +126,26 @@ class AsyncOBS:
         url_path = "/".join(("source", project, *path))
         await self._delete(url_path, **params)
 
-    async def _command(self, url_path, cmd, **params):
-        LOG.debug(f"Command {cmd} to {url_path}")
+    async def _command(self, url_path, cmd, filename_path=None, data=None, **params):
         params["cmd"] = cmd
-        await self.client.post(f"{self.url}/{url_path}", params=params)
+        if filename_path:
+            LOG.debug(f"Start command {cmd} {filename_path} to {url_path}")
+            with filename_path.open("rb") as f:
+                await self.client.post(f"{self.url}/{url_path}", data=f, params=params)
+            LOG.debug(f"End command {cmd} {filename_path} to {url_path}")
+        elif data:
+            LOG.debug(f"Start command {cmd} to {url_path}")
+            await self.client.post(f"{self.url}/{url_path}", data=data, params=params)
+            LOG.debug(f"End command {cmd} to {url_path}")
 
-    async def command(self, project, *path, cmd, **params):
+    async def command(
+        self, project, *path, cmd, filename_path=None, data=None, **params
+    ):
         """Send a command to a project or package"""
         url_path = "/".join(("source", project, *path))
-        await self._command(url_path, cmd, **params)
+        await self._command(
+            url_path, cmd, filename_path=filename_path, data=data, **params
+        )
 
     async def _transfer(self, url_path, to_url_path, to_obs=None, **params):
         to_obs = to_obs if to_obs else self
@@ -288,7 +301,7 @@ class StorageOBS:
             assert filename == md5, f"Storage {self.project}/{self.package} not valid"
             self.index.add(filename)
 
-    # TODO: Implement transfer as a bidirectional API only for
+    # TODO: implement transfer as a bidirectional API only for
     # storage, and from in from AsyncOBS.  Express in in terms of
     # copypac internally, without affecting the `files` metadata not
     # the generic interface
@@ -301,9 +314,13 @@ class StorageOBS:
             self.project, self.package, md5, project, package, filename, obs,
         )
 
+    # TODO: create a commit object in OBS
+    # TODO: generate a common API (store, transfer, get) to abstract from LFS
+
 
 class StorageLFS:
     """File storage in git LFS"""
+
     pass
 
 
@@ -606,7 +623,11 @@ class Importer:
         await asyncio.gather(
             *(
                 self.obs.upload(
-                    project, package, filename, filename_path=package_path / filename,
+                    project,
+                    package,
+                    filename,
+                    filename_path=package_path / filename,
+                    rev="repository",
                 )
                 for filename, _ in files_md5_upload
             ),
@@ -615,6 +636,22 @@ class Importer:
                 for filename, md5 in files_md5_transfer
             ),
             *(self.obs.delete(project, package, filename) for filename in files_delete),
+        )
+
+        # Create the directory XML to generate a commit
+        directory = ET.Element("directory")
+        for filename, md5 in files_md5_git:
+            entry = ET.SubElement(directory, "entry")
+            entry.attrib["name"] = filename
+            entry.attrib["md5"] = md5
+        commit_date = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        await self.obs.command(
+            project,
+            package,
+            cmd="commitfilelist",
+            data=ET.tostring(directory),
+            user=self.obs.username,
+            comment=f"Import {commit_date}",
         )
 
     async def package_metadata(self, project, package):
