@@ -265,7 +265,7 @@ class Git:
         return zip(files, md5s)
 
 
-class Storage:
+class StorageOBS:
     """File storage in OBS"""
 
     async def __new__(cls, *args, **kwargs):
@@ -296,6 +296,11 @@ class Storage:
         await self.obs.transfer(
             self.project, self.package, md5, project, package, filename, obs,
         )
+
+
+class StorageLFS:
+    """File storage in git LFS"""
+    pass
 
 
 class Exporter:
@@ -694,7 +699,7 @@ async def export(args, config):
     git = Git(repository)
     git.create()
 
-    storage = await Storage(obs, config["export"]["storage"])
+    storage = await StorageOBS(obs, config["export"]["storage"])
     await obs.create(storage.project, storage.package, disabled=True)
 
     exporter = Exporter(obs, git, storage)
@@ -728,7 +733,7 @@ async def import_(args, config):
         config["export"]["password"],
     )
 
-    storage = await Storage(storage_obs, config["export"]["storage"])
+    storage = await StorageOBS(storage_obs, config["export"]["storage"])
 
     if not await storage_obs.authorized(storage.project, storage.package):
         print("No authorization to access the file storage in build service")
