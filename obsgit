@@ -793,23 +793,24 @@ class Importer:
             ),
         )
 
-        # Create the directory XML to generate a commit
-        directory = ET.Element("directory")
-        for filename, md5 in files_md5_git | files_md5_git_store:
-            entry = ET.SubElement(directory, "entry")
-            entry.attrib["name"] = filename
-            entry.attrib["md5"] = md5
-        commit_date = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        if files_md5_upload or files_md5_transfer or files_delete:
+            # Create the directory XML to generate a commit
+            directory = ET.Element("directory")
+            for filename, md5 in files_md5_git | files_md5_git_store:
+                entry = ET.SubElement(directory, "entry")
+                entry.attrib["name"] = filename
+                entry.attrib["md5"] = md5
 
-        # TODO: do not commit if there are no changes
-        await self.obs.command(
-            project,
-            package,
-            cmd="commitfilelist",
-            data=ET.tostring(directory),
-            user=self.obs.username,
-            comment=f"Import {commit_date}",
-        )
+            commit_date = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+            await self.obs.command(
+                project,
+                package,
+                cmd="commitfilelist",
+                data=ET.tostring(directory),
+                user=self.obs.username,
+                comment=f"Import {commit_date}",
+            )
 
     async def package_metadata(self, project, package):
         metadata_path = self.git.prefix / package / ".obs"
