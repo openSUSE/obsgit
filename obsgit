@@ -229,8 +229,9 @@ class AsyncOBS:
 class Git:
     """Local git repository"""
 
-    def __init__(self, path):
+    def __init__(self, path, prefix=None):
         self.path = pathlib.Path(path)
+        self.prefix = self.path / prefix if prefix else self.path
 
     # TODO: Extend it to packages and files
     def exists(self):
@@ -239,28 +240,28 @@ class Git:
 
     def create(self):
         """Create a local git repository"""
-        self.path.mkdir(parents=True, exist_ok=True)
+        self.prefix.mkdir(parents=True, exist_ok=True)
         pygit2.init_repository(self.path)
 
     async def delete(self, package, filename=None):
         """Delete a package or a file from a git repository"""
         loop = asyncio.get_running_loop()
         if filename:
-            await loop.run_in_executor(None, (self.path / package / filename).unlink)
+            await loop.run_in_executor(None, (self.prefix / package / filename).unlink)
         else:
-            await loop.run_in_executor(None, shutil.rmtree, self.path / package)
+            await loop.run_in_executor(None, shutil.rmtree, self.prefix / package)
 
     def packages(self):
         """List of packages in the git repository"""
         return [
             package.parts[-1]
-            for package in self.path.iterdir()
+            for package in self.prefix.iterdir()
             if package.is_dir() and package.parts[-1] not in (".git", ".obs")
         ]
 
     def _md5(self, package, filename):
         md5 = hashlib.md5()
-        with (self.path / package / filename).open("rb") as f:
+        with (self.prefix / package / filename).open("rb") as f:
             while True:
                 chunk = f.read(1024 * 4)
                 if not chunk:
@@ -273,7 +274,7 @@ class Git:
         loop = asyncio.get_running_loop()
         files = [
             file_.parts[-1]
-            for file_ in (self.path / package).iterdir()
+            for file_ in (self.prefix / package).iterdir()
             if file_.is_file()
         ]
         md5s = await asyncio.gather(
@@ -342,7 +343,7 @@ class StorageOBS:
         print(f"(StorageOBS) stored {filename_path}")
 
     async def store_files(self, package, files_md5):
-        package_path = self.git.path / package
+        package_path = self.git.prefix / package
         files_md5_exists = [
             (filename, md5)
             for filename, md5 in files_md5
@@ -460,7 +461,7 @@ class StorageLFS:
         await self.commit()
 
     async def store_files(self, package, files_md5):
-        package_path = self.git.path / package
+        package_path = self.git.prefix / package
         for filename, _ in files_md5:
             if not self._tracked(filename):
                 await self._store(package_path / filename)
@@ -601,7 +602,7 @@ class Exporter:
 
     async def package(self, project, package):
         """Export a package from OBS to git"""
-        package_path = self.git.path / package
+        package_path = self.git.prefix / package
         package_path.mkdir(exist_ok=True)
 
         print(f"{project}/{package} ...")
@@ -660,7 +661,7 @@ class Exporter:
         await self.storage.store_files(package, files_md5_store + files_md5_obs_store)
 
     async def package_metadata(self, project, package):
-        metadata_path = self.git.path / package / ".obs"
+        metadata_path = self.git.prefix / package / ".obs"
         metadata_path.mkdir(exist_ok=True)
 
         metadata = (
@@ -747,7 +748,7 @@ class Importer:
 
         await self.package_metadata(project, package)
 
-        package_path = self.git.path / package
+        package_path = self.git.prefix / package
 
         files_md5_obs, _ = await self.obs.files_md5_revision(project, package)
         files_md5_obs = set(files_md5_obs)
@@ -811,7 +812,7 @@ class Importer:
         )
 
     async def package_metadata(self, project, package):
-        metadata_path = self.git.path / package / ".obs"
+        metadata_path = self.git.prefix / package / ".obs"
         metadata = (
             "_meta",
             "_attribute",
@@ -831,7 +832,12 @@ class Importer:
 
 
 def read_or_create_config(
-    config_filename, url=None, username=None, password=None, storage="obs"
+    config_filename,
+    url=None,
+    username=None,
+    password=None,
+    storage="obs",
+    prefix="packages",
 ):
     """Read or create a configuration file in INI format"""
     if not config_filename:
@@ -858,11 +864,13 @@ def read_or_create_config(
             "username": username,
             "password": password if password else "password",
         }
+
         config["export"] = {
             "url": url if url else "https://api.opensuse.org",
             "username": username,
             "password": password if password else "password",
         }
+
         if not storage or storage == "obs":
             config["storage"] = {
                 "type": "obs",
@@ -878,6 +886,8 @@ def read_or_create_config(
         else:
             print(f"Storage type {storage} not valid")
             sys.exit(-1)
+
+        config["git"] = {"prefix": prefix}
 
         with config_filename.open("w") as f:
             config.write(f)
@@ -912,7 +922,7 @@ async def export(args, config):
         print("Project or package not found in build service")
         sys.exit(-1)
 
-    git = Git(repository)
+    git = Git(repository, config["git"]["prefix"])
     git.create()
     print("Initialized the git repository")
 
@@ -969,7 +979,7 @@ async def import_(args, config):
         config["import"]["password"],
     )
 
-    git = Git(repository)
+    git = Git(repository, config["git"]["prefix"])
     if not git.exists():
         print("Project or package not found in build service")
         sys.exit(-1)
@@ -1048,6 +1058,12 @@ if __name__ == "__main__":
         default="obs",
         help="Type of storage for large files",
     )
+    parser_create_config.add_argument(
+        "--prefix",
+        "-p",
+        default="packages",
+        help="Git directory where all the packages will be stored",
+    )
     parser_create_config.set_defaults(func=create_config)
 
     parser_export = subparser.add_parser("export", help="export between OBS and git")
@@ -1079,8 +1095,10 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(-1)
 
+    # TODO: those parameters should be required only during the creation
     storage_type = args.type if "type" in args else None
+    git_prefix = args.prefix if "prefix" in args else None
     config = read_or_create_config(
-        args.config, args.api, args.username, args.password, storage_type
+        args.config, args.api, args.username, args.password, storage_type, git_prefix
     )
     asyncio.run(args.func(args, config))
