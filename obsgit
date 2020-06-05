@@ -311,7 +311,7 @@ class StorageOBS:
             assert filename == md5, f"Storage {self.project}/{self.package} not valid"
             self.index.add(filename)
 
-    async def transfer(self, md5, project, package, filename, obs):
+    async def transfer(self, md5, project, package, filename, obs, **params):
         """Copy a file to the file storage from a remote OBS"""
         assert (
             md5 in self.index
@@ -322,7 +322,7 @@ class StorageOBS:
         #       https://github.com/openSUSE/open-build-service/issues/9615
         print(f"(StorageOBS) transfering {project}/{package}/{filename}")
         await self.obs.transfer(
-            self.project, self.package, md5, project, package, filename, obs,
+            self.project, self.package, md5, project, package, filename, obs, **params
         )
         print(f"(StorageOBS) transferred {project}/{package}/{filename}")
 
@@ -424,7 +424,7 @@ class StorageLFS:
         # Track the default extensions already, we can later include
         # specific files
         if is_installed:
-            for binary in (Exporter.BINARY | Exporter.NON_BINARY_EXCEPTIONS):
+            for binary in Exporter.BINARY | Exporter.NON_BINARY_EXCEPTIONS:
                 await self._store(pathlib.Path(f"*{binary}"))
 
         return is_installed
@@ -781,19 +781,26 @@ class Importer:
                 for filename, _ in files_md5_upload
             ),
             *(
-                self.storage.transfer(md5, project, package, filename, self.obs)
+                self.storage.transfer(
+                    md5, project, package, filename, self.obs, rev="repository"
+                )
                 for filename, md5 in files_md5_transfer
             ),
-            *(self.obs.delete(project, package, filename) for filename in files_delete),
+            *(
+                self.obs.delete(project, package, filename, rev="repository")
+                for filename in files_delete
+            ),
         )
 
         # Create the directory XML to generate a commit
         directory = ET.Element("directory")
-        for filename, md5 in files_md5_git | files_md5_transfer:
+        for filename, md5 in files_md5_git | files_md5_git_store:
             entry = ET.SubElement(directory, "entry")
             entry.attrib["name"] = filename
             entry.attrib["md5"] = md5
         commit_date = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+        # TODO: do not commit if there are no changes
         await self.obs.command(
             project,
             package,
@@ -996,7 +1003,6 @@ async def import_(args, config):
         print("Git LFS extension enabled in the repository")
     else:
         raise NotImplementedError(f"Storage {storage_type} not implemented")
-
 
     importer = Importer(obs, git, storage)
     if package:
