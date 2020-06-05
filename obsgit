@@ -4,13 +4,16 @@ import argparse
 import asyncio
 import configparser
 import datetime
+import fnmatch
 import functools
 import hashlib
+import itertools
 import logging
 import os
 import pathlib
 import shutil
 import stat
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -290,42 +293,257 @@ class StorageOBS:
         await instance.__init__(*args, **kwargs)
         return instance
 
-    # TODO: change the signature to accept the project and package
-    async def __init__(self, obs, storage):
+    async def __init__(self, obs, project, package, git):
         self.obs = obs
-        self.project, self.package = pathlib.Path(storage).parts
-        self.index = set()
+        self.project = project
+        self.package = package
+        self.git = git
 
+        self.index = set()
+        self.sync = True
+
+        await self._update_index()
+
+    async def _update_index(self):
+        # TODO: we do not clean the index, we only add elements
         files_md5, _ = await self.obs.files_md5_revision(self.project, self.package)
         for filename, md5 in files_md5:
             assert filename == md5, f"Storage {self.project}/{self.package} not valid"
             self.index.add(filename)
 
-    # TODO: implement transfer as a bidirectional API only for
-    # storage, and from in from AsyncOBS.  Express in in terms of
-    # copypac internally, without affecting the `files` metadata not
-    # the generic interface
     async def transfer(self, md5, project, package, filename, obs):
         """Copy a file to the file storage from a remote OBS"""
         assert (
             md5 in self.index
         ), f"File {package}/{filename} ({md5}) missing from storage"
+        # TODO: replace "transfer" with copy_to and copy_from.
+        # TODO: when both OBS services are the same, use the copy pack
+        #       / commit trick from
+        #       https://github.com/openSUSE/open-build-service/issues/9615
+        print(f"(StorageOBS) transfering {project}/{package}/{filename}")
         await self.obs.transfer(
             self.project, self.package, md5, project, package, filename, obs,
         )
+        print(f"(StorageOBS) transferred {project}/{package}/{filename}")
 
-    # TODO: create a commit object in OBS
-    # TODO: generate a common API (store, transfer, get) to abstract from LFS
+    async def _store(self, filename_path, md5):
+        """Store a file with md5 into the storage"""
+        self.index.add(md5)
+        self.sync = False
+
+        print(f"(StorageOBS) storing {filename_path}")
+        await self.obs.upload(
+            self.project,
+            self.package,
+            md5,
+            filename_path=filename_path,
+            rev="repository",
+        )
+        print(f"(StorageOBS) stored {filename_path}")
+
+    async def store_files(self, package, files_md5):
+        package_path = self.git.path / package
+        files_md5_exists = [
+            (filename, md5)
+            for filename, md5 in files_md5
+            if (package_path / filename).exists()
+        ]
+
+        await asyncio.gather(
+            *(
+                self._store(package_path / filename, md5)
+                for filename, md5 in files_md5_exists
+            )
+        )
+
+        await asyncio.gather(
+            *(self.git.delete(package, filename) for filename, _ in files_md5_exists)
+        )
+
+        with (package_path / ".obs" / "files").open("w") as f:
+            f.writelines(
+                f"{filename}\t\t{md5}\n" for filename, md5 in sorted(files_md5)
+            )
+
+    async def fetch(self, md5, filename_path):
+        """Download a file from the storage under a different filename"""
+        self.obs.download(self.project, self.package, md5, filename_path=filename_path)
+
+    async def commit(self):
+        # If the index is still valid, we do not commit a change
+        if self.sync:
+            return
+
+        directory = ET.Element("directory")
+        for md5 in self.index:
+            entry = ET.SubElement(directory, "entry")
+            entry.attrib["name"] = md5
+            entry.attrib["md5"] = md5
+        commit_date = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        await self.obs.command(
+            self.project,
+            self.package,
+            cmd="commitfilelist",
+            data=ET.tostring(directory),
+            user=self.obs.username,
+            comment=f"Storage syncronization {commit_date}",
+        )
+        self.sync = True
 
 
 class StorageLFS:
     """File storage in git LFS"""
 
-    pass
+    def __init__(self, git):
+        self.git = git
+        # When using the OBS storage we can avoid some downloads, but
+        # is not the case for LFS.  In this model the index will be
+        # empty always.
+        self.index = set()
+        self.tracked = set()
+
+        self._update_tracked()
+
+    def _update_tracked(self):
+        out = subprocess.run(
+            ["git", "lfs", "track"],
+            cwd=self.git.path,
+            capture_output=True,
+            encoding="utf-8",
+        )
+        for line in out.stdout.splitlines():
+            if line.startswith(" " * 4):
+                self.tracked.add(line.split()[0])
+
+    async def is_installed(self):
+        out = subprocess.run(
+            ["git", "lfs", "install"], cwd=self.git.path, capture_output=True
+        )
+        is_installed = out.returncode == 0
+
+        # Track the default extensions already, we can later include
+        # specific files
+        if is_installed:
+            for binary in (Exporter.BINARY | Exporter.NON_BINARY_EXCEPTIONS):
+                await self._store(pathlib.Path(f"*{binary}"))
+
+        return is_installed
+
+    def overlaps(self):
+        return [
+            (a, b)
+            for a, b in itertools.combinations(self.tracked, 2)
+            if fnmatch.fnmatch(a, b)
+        ]
+
+    def transfer(self, md5, project, package, filename, obs):
+        pass
+
+    def _tracked(self, filename):
+        return any(fnmatch.fnmatch(filename, track) for track in self.tracked)
+
+    async def _store(self, filename_path):
+        # When registering general patterms, like "*.gz" we do not
+        # have a path relative to the git repository
+        try:
+            filename_path = filename_path.relative_to(self.git.path)
+        except ValueError:
+            pass
+
+        # TODO: we can edit `.gitattributes` manually
+        subprocess.run(
+            ["git", "lfs", "track", filename_path],
+            cwd=self.git.path,
+            capture_output=True,
+        )
+        self.tracked.add(str(filename_path))
+        await self.commit()
+
+    async def store_files(self, package, files_md5):
+        package_path = self.git.path / package
+        for filename, _ in files_md5:
+            if not self._tracked(filename):
+                await self._store(package_path / filename)
+
+    async def fetch(self):
+        pass
+
+    async def delete(self, filename_path):
+        subprocess.run(
+            ["git", "lfs", "untrack", filename_path],
+            cwd=self.git.path,
+            capture_output=True,
+        )
+
+    async def commit(self):
+        subprocess.run(
+            ["git", "add", ".gitattributes"], cwd=self.git.path, capture_output=True
+        )
 
 
 class Exporter:
     """Export projects and packages from OBS to git"""
+
+    BINARY = {
+        ".xz",
+        ".gz",
+        ".bz2",
+        ".zip",
+        ".gem",
+        ".tgz",
+        ".png",
+        ".pdf",
+        ".jar",
+        ".oxt",
+        ".whl",
+        ".rpm",
+    }
+    NON_BINARY_EXCEPTIONS = {".obscpio"}
+    NON_BINARY = {
+        ".changes",
+        ".spec",
+        ".patch",
+        ".diff",
+        ".conf",
+        ".yml",
+        ".keyring",
+        ".sig",
+        ".sh",
+        ".dif",
+        ".txt",
+        ".service",
+        ".asc",
+        ".cabal",
+        ".desktop",
+        ".xml",
+        ".pom",
+        ".SUSE",
+        ".in",
+        ".obsinfo",
+        ".1",
+        ".init",
+        ".kiwi",
+        ".rpmlintrc",
+        ".rules",
+        ".py",
+        ".sysconfig",
+        ".logrotate",
+        ".pl",
+        ".dsc",
+        ".c",
+        ".install",
+        ".8",
+        ".md",
+        ".html",
+        ".script",
+        ".xml",
+        ".test",
+        ".cfg",
+        ".el",
+        ".pamd",
+        ".sign",
+        ".macros",
+    }
 
     def __init__(self, obs, git, storage):
         self.obs = obs
@@ -335,72 +553,11 @@ class Exporter:
     @staticmethod
     def is_binary(filename):
         """Use some heuristics to detect if a file is binary"""
-        binary = {
-            ".xz",
-            ".gz",
-            ".bz2",
-            ".zip",
-            ".gem",
-            ".tgz",
-            ".png",
-            ".pdf",
-            ".jar",
-            ".oxt",
-            ".whl",
-            ".rpm",
-        }
-        non_binary_exceptions = {".obscpio"}
-        non_binary = {
-            ".changes",
-            ".spec",
-            ".patch",
-            ".diff",
-            ".conf",
-            ".yml",
-            ".keyring",
-            ".sig",
-            ".sh",
-            ".dif",
-            ".txt",
-            ".service",
-            ".asc",
-            ".cabal",
-            ".desktop",
-            ".xml",
-            ".pom",
-            ".SUSE",
-            ".in",
-            ".obsinfo",
-            ".1",
-            ".init",
-            ".kiwi",
-            ".rpmlintrc",
-            ".rules",
-            ".py",
-            ".sysconfig",
-            ".logrotate",
-            ".pl",
-            ".dsc",
-            ".c",
-            ".install",
-            ".8",
-            ".md",
-            ".html",
-            ".script",
-            ".xml",
-            ".test",
-            ".cfg",
-            ".el",
-            ".pamd",
-            ".sign",
-            ".macros",
-        }
-
         # Shortcut the detection based on the file extension
         suffix = pathlib.Path(filename).suffix
-        if suffix in binary or suffix in non_binary_exceptions:
+        if suffix in Exporter.BINARY or suffix in Exporter.NON_BINARY_EXCEPTIONS:
             return True
-        if suffix in non_binary:
+        if suffix in Exporter.NON_BINARY:
             return False
 
         # Read a chunk of the file and try to determine the encoding, if
@@ -420,6 +577,8 @@ class Exporter:
             *(self.package(project, package) for package in packages_obs),
             *(self.git.delete(package) for package in packages_delete),
         )
+
+        await self.storage.commit()
 
     async def project_metadata(self, project):
         """Export the project metadata from OBS to git"""
@@ -445,6 +604,8 @@ class Exporter:
         package_path = self.git.path / package
         package_path.mkdir(exist_ok=True)
 
+        print(f"{project}/{package} ...")
+
         # We do not know, before downloading, if a file is binary or
         # text.  The strategy for now is to download all the files
         # (except the ones already in the remote storage or in git),
@@ -454,11 +615,6 @@ class Exporter:
         files_md5_obs, revision = await self.obs.files_md5_revision(project, package)
         files_md5_obs = set(files_md5_obs)
         files_md5_git = set(await self.git.files_md5(package))
-        files_md5_obs_store = [
-            (filename, md5)
-            for filename, md5 in files_md5_obs
-            if md5 in self.storage.index
-        ]
 
         # TODO: one optimization is to detect the files that are
         # stored in the local "files" cache, that we already know that
@@ -488,6 +644,7 @@ class Exporter:
             *(self.git.delete(package, filename) for filename in files_delete),
         )
 
+        # TODO: do not over-optimize here, and detect old binary files
         # Once we download the full package, we store the new binary files
         files_md5_store = [
             (filename, md5)
@@ -495,28 +652,12 @@ class Exporter:
             if filename in files_download
             and Exporter.is_binary(package_path / filename)
         ]
-
-        await asyncio.gather(
-            *(
-                self.obs.upload(
-                    self.storage.project,
-                    self.storage.package,
-                    md5,
-                    filename_path=package_path / filename,
-                    rev="repository",
-                )
-                for filename, md5 in files_md5_store
-            )
-        )
-        await asyncio.gather(
-            *(self.git.delete(package, filename) for filename, _ in files_md5_store)
-        )
-
-        with (package_path / ".obs" / "files").open("w") as f:
-            f.writelines(
-                f"{filename}\t\t{md5}\n"
-                for filename, md5 in sorted(files_md5_obs_store + files_md5_store)
-            )
+        files_md5_obs_store = [
+            (filename, md5)
+            for filename, md5 in files_md5_obs
+            if md5 in self.storage.index
+        ]
+        await self.storage.store_files(package, files_md5_store + files_md5_obs_store)
 
     async def package_metadata(self, project, package):
         metadata_path = self.git.path / package / ".obs"
@@ -602,6 +743,8 @@ class Importer:
         )
 
     async def package(self, project, package):
+        print(f"{project}/{package} ...")
+
         await self.package_metadata(project, package)
 
         package_path = self.git.path / package
@@ -609,8 +752,14 @@ class Importer:
         files_md5_obs, _ = await self.obs.files_md5_revision(project, package)
         files_md5_obs = set(files_md5_obs)
         files_md5_git = set(await self.git.files_md5(package))
-        with (package_path / ".obs" / "files").open() as f:
-            files_md5_git_store = {tuple(line.split()) for line in f.readlines()}
+
+        # TODO: reading the files is part of StorageXXX class
+        meta_file = package_path / ".obs" / "files"
+        if meta_file.exists():
+            with (meta_file).open() as f:
+                files_md5_git_store = {tuple(line.split()) for line in f.readlines()}
+        else:
+            files_md5_git_store = set()
 
         files_md5_upload = files_md5_git - files_md5_obs
         files_md5_transfer = files_md5_git_store - files_md5_obs
@@ -640,7 +789,7 @@ class Importer:
 
         # Create the directory XML to generate a commit
         directory = ET.Element("directory")
-        for filename, md5 in files_md5_git:
+        for filename, md5 in files_md5_git | files_md5_transfer:
             entry = ET.SubElement(directory, "entry")
             entry.attrib["name"] = filename
             entry.attrib["md5"] = md5
@@ -674,8 +823,10 @@ class Importer:
         )
 
 
-def read_config(config_filename, url=None, username=None, password=None):
-    """Read a configuration file in INI format"""
+def read_or_create_config(
+    config_filename, url=None, username=None, password=None, storage="obs"
+):
+    """Read or create a configuration file in INI format"""
     if not config_filename:
         print("Configuration file not provided")
         sys.exit(-1)
@@ -694,10 +845,6 @@ def read_config(config_filename, url=None, username=None, password=None):
             config["import"]["password"] = password
             config["export"]["password"] = password
     else:
-        print(
-            "Configuration file does not exist, creating a template "
-            f"in {config_filename}"
-        )
         username = username if username else os.getlogin()
         config["import"] = {
             "url": url if url else "https://api.opensuse.org",
@@ -709,14 +856,22 @@ def read_config(config_filename, url=None, username=None, password=None):
             "username": username,
             "password": password if password else "password",
         }
-        config["storage"] = {
-            # "type": {"lfs", "obs"}
-            "type": "obs",
-            "url": url if url else "https://api.opensuse.org",
-            "username": username,
-            "password": password if password else "password",
-            "storage": f"home:{username}:storage/files",
-        }
+        if not storage or storage == "obs":
+            config["storage"] = {
+                "type": "obs",
+                "url": url if url else "https://api.opensuse.org",
+                "username": username,
+                "password": password if password else "password",
+                "storage": f"home:{username}:storage/files",
+            }
+        elif storage == "lfs":
+            config["storage"] = {
+                "type": "lfs",
+            }
+        else:
+            print(f"Storage type {storage} not valid")
+            sys.exit(-1)
+
         with config_filename.open("w") as f:
             config.write(f)
 
@@ -724,6 +879,11 @@ def read_config(config_filename, url=None, username=None, password=None):
         config_filename.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     return config
+
+
+async def create_config(args, config):
+    # TODO: refactor de code, so the configuration is created here
+    print(f"Edit {args.config} to adjust the configuration and passwords")
 
 
 async def export(args, config):
@@ -747,17 +907,38 @@ async def export(args, config):
 
     git = Git(repository)
     git.create()
+    print("Initialized the git repository")
 
-    if config["storage"]["type"] == "obs":
+    storage_type = config["storage"]["type"]
+    if storage_type == "obs":
         storage_obs = AsyncOBS(
             config["storage"]["url"],
             config["storage"]["username"],
             config["storage"]["password"],
         )
-        storage = await StorageOBS(storage_obs, config["storage"]["storage"])
-        await storage_obs.create(storage.project, storage.package, disabled=True)
+        storage_project, storage_package = pathlib.Path(
+            config["storage"]["storage"]
+        ).parts
+        await storage_obs.create(storage_project, storage_package, disabled=True)
+        print("Remote storage in OBS initialized")
+
+        storage = await StorageOBS(storage_obs, storage_project, storage_package, git)
+    elif storage_type == "lfs":
+        storage = StorageLFS(git)
+
+        if not await storage.is_installed():
+            print("LFS extension not installed")
+            await obs.close()
+            sys.exit(-1)
+        print("Git LFS extension enabled in the repository")
+
+        overlaps = storage.overlaps()
+        if overlaps:
+            print("Multiple LFS tracks are overlaped. Fix them manually.")
+            for a, b in overlaps:
+                print(f"* {a} - {b}")
     else:
-        raise NotImplementedError("LFS storage not implemented")
+        raise NotImplementedError(f"Storage {storage_type} not implemented")
 
     exporter = Exporter(obs, git, storage)
     if package:
@@ -765,7 +946,8 @@ async def export(args, config):
     else:
         await exporter.project(project)
 
-    await storage_obs.close()
+    if storage_type == "obs":
+        await storage_obs.close()
     await obs.close()
 
 
@@ -785,23 +967,36 @@ async def import_(args, config):
         print("Project or package not found in build service")
         sys.exit(-1)
 
-    if config["storage"]["type"] == "obs":
+    storage_type = config["storage"]["type"]
+    if storage_type == "obs":
         storage_obs = AsyncOBS(
             config["storage"]["url"],
             config["storage"]["username"],
             config["storage"]["password"],
         )
-        storage = await StorageOBS(storage_obs, config["storage"]["storage"])
+        storage_project, storage_package = pathlib.Path(
+            config["storage"]["storage"]
+        ).parts
+
+        if not await storage_obs.authorized(storage_project, storage_package):
+            print("No authorization to access the file storage in build service")
+            sys.exit(-1)
+
+        if not await storage_obs.exists(storage_project, storage_package):
+            print("File storage not found in build service")
+            sys.exit(-1)
+
+        storage = await StorageOBS(storage_obs, storage_project, storage_package, git)
+    elif storage_type == "lfs":
+        storage = StorageLFS(git)
+
+        if not await storage.is_installed():
+            print("LFS extension not installed")
+            sys.exit(-1)
+        print("Git LFS extension enabled in the repository")
     else:
-        raise NotImplementedError("LFS storage not implemented")
+        raise NotImplementedError(f"Storage {storage_type} not implemented")
 
-    if not await storage_obs.authorized(storage.project, storage.package):
-        print("No authorization to access the file storage in build service")
-        sys.exit(-1)
-
-    if not await storage_obs.exists(storage.project, storage.package):
-        print("File storage not found in build service")
-        sys.exit(-1)
 
     importer = Importer(obs, git, storage)
     if package:
@@ -809,7 +1004,8 @@ async def import_(args, config):
     else:
         await importer.project(project)
 
-    await storage_obs.close()
+    if storage_type == "obs":
+        await storage_obs.close()
     await obs.close()
 
 
@@ -835,6 +1031,18 @@ if __name__ == "__main__":
     )
 
     subparser = parser.add_subparsers()
+
+    parser_create_config = subparser.add_parser(
+        "create-config", help="create default config file"
+    )
+    parser_create_config.add_argument(
+        "--type",
+        "-t",
+        choices=["obs", "lfs"],
+        default="obs",
+        help="Type of storage for large files",
+    )
+    parser_create_config.set_defaults(func=create_config)
 
     parser_export = subparser.add_parser("export", help="export between OBS and git")
     parser_export.add_argument("project", help="OBS project name")
@@ -865,5 +1073,8 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(-1)
 
-    config = read_config(args.config, args.api, args.username, args.password)
+    storage_type = args.type if "type" in args else None
+    config = read_or_create_config(
+        args.config, args.api, args.username, args.password, storage_type
+    )
     asyncio.run(args.func(args, config))
