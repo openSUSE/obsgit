@@ -574,10 +574,20 @@ class Exporter:
         if suffix in Exporter.NON_BINARY:
             return False
 
+        # Small (5Kb) files are considered as text
+        if filename.stat().st_size < 5 * 1024:
+            return False
+
         # Read a chunk of the file and try to determine the encoding, if
         # the confidence is low we assume binary
         with filename.open("rb") as f:
-            encoding = chardet.detect(f.read(1024 * 4))
+            chunk = f.read(4 * 1024)
+            try:
+                chunk.decode("utf-8")
+            except UnicodeDecodeError:
+                encoding = chardet.detect(chunk)
+            else:
+                return False
         return encoding["confidence"] < 0.8
 
     async def project(self, project):
