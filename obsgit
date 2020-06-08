@@ -28,9 +28,10 @@ LOG = logging.getLogger(__name__)
 class AsyncOBS:
     """Minimal asynchronous interface for OBS"""
 
-    def __init__(self, url, username, password):
+    def __init__(self, url, username, password, link="auto"):
         self.url = url
         self.username = username
+        self.link = link
 
         conn = aiohttp.TCPConnector(limit=5, limit_per_host=5)
         auth = aiohttp.BasicAuth(username, password)
@@ -193,11 +194,23 @@ class AsyncOBS:
     async def files_md5_revision(self, project, package):
         """List of (filename, md5) for a package, and the active revision"""
         root = await self._xml(f"/source/{project}/{package}", rev="latest")
+
+        revision = root.get("rev")
+
         if root.find(".//entry[@name='_link']") is not None:
-            revision = root.find(".//linkinfo").get("xsrcmd5")
-            root = await self._xml(f"/source/{project}/{package}", rev=revision)
-        else:
-            revision = root.get("rev")
+            project_link = (
+                await self._xml(f"/source/{project}/{package}/_link", rev="latest")
+            ).get("project")
+
+            if project_link and project_link != project and self.link == "never":
+                print(
+                    f"ERROR: Link {project}/{package} pointing outside ({project_link})"
+                )
+                return [], None
+
+            if (project_link != project and self.link == "auto") or self.link == "always":
+                revision = root.find(".//linkinfo").get("xsrcmd5")
+                root = await self._xml(f"/source/{project}/{package}", rev=revision)
 
         files_md5 = [
             (entry.get("name"), entry.get("md5")) for entry in root.findall(".//entry")
@@ -837,8 +850,9 @@ def read_or_create_config(
     url=None,
     username=None,
     password=None,
-    storage="obs",
+    storage="lfs",
     prefix="packages",
+    link="never",
 ):
     """Read or create a configuration file in INI format"""
     if not config_filename:
@@ -870,6 +884,7 @@ def read_or_create_config(
             "url": url if url else "https://api.opensuse.org",
             "username": username,
             "password": password if password else "password",
+            "link": link,
         }
 
         if not storage or storage == "obs":
@@ -913,6 +928,7 @@ async def export(args, config):
         config["export"]["url"],
         config["export"]["username"],
         config["export"]["password"],
+        config["export"]["link"],
     )
 
     if not await obs.authorized(project, package):
@@ -1056,7 +1072,7 @@ if __name__ == "__main__":
         "--type",
         "-t",
         choices=["obs", "lfs"],
-        default="obs",
+        default="lfs",
         help="Type of storage for large files",
     )
     parser_create_config.add_argument(
@@ -1064,6 +1080,13 @@ if __name__ == "__main__":
         "-p",
         default="packages",
         help="Git directory where all the packages will be stored",
+    )
+    parser_create_config.add_argument(
+        "--link",
+        "-l",
+        choices=["never", "always", "auto"],
+        default="never",
+        help="Expand package links",
     )
     parser_create_config.set_defaults(func=create_config)
 
@@ -1099,7 +1122,14 @@ if __name__ == "__main__":
     # TODO: those parameters should be required only during the creation
     storage_type = args.type if "type" in args else None
     git_prefix = args.prefix if "prefix" in args else None
+    link_expand = args.link if "link" in args else None
     config = read_or_create_config(
-        args.config, args.api, args.username, args.password, storage_type, git_prefix
+        args.config,
+        args.api,
+        args.username,
+        args.password,
+        storage_type,
+        git_prefix,
+        link_expand,
     )
     asyncio.run(args.func(args, config))
