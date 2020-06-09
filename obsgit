@@ -208,7 +208,9 @@ class AsyncOBS:
                 )
                 return [], None
 
-            if (project_link != project and self.link == "auto") or self.link == "always":
+            if (
+                project_link != project and self.link == "auto"
+            ) or self.link == "always":
                 revision = root.find(".//linkinfo").get("xsrcmd5")
                 root = await self._xml(f"/source/{project}/{package}", rev=revision)
 
@@ -855,78 +857,69 @@ class Importer:
         )
 
 
-def read_or_create_config(
-    config_filename,
-    url=None,
-    username=None,
-    password=None,
-    storage="lfs",
-    prefix="packages",
-    link="never",
-):
+def read_config(config_filename):
     """Read or create a configuration file in INI format"""
     if not config_filename:
         print("Configuration file not provided")
         sys.exit(-1)
 
+    if not pathlib.Path(config_filename).exists():
+        print(f"Configuration file {config_filename} not found.")
+        print("Use create_config to create a new configuration file")
+        sys.exit(-1)
+
     config = configparser.ConfigParser()
-
-    if pathlib.Path(config_filename).exists():
-        config.read(config_filename)
-        if url:
-            config["import"]["url"] = url
-            config["export"]["url"] = url
-        if username:
-            config["import"]["username"] = username
-            config["export"]["username"] = username
-        if password:
-            config["import"]["password"] = password
-            config["export"]["password"] = password
-    else:
-        username = username if username else os.getlogin()
-        config["import"] = {
-            "url": url if url else "https://api.opensuse.org",
-            "username": username,
-            "password": password if password else "password",
-        }
-
-        config["export"] = {
-            "url": url if url else "https://api.opensuse.org",
-            "username": username,
-            "password": password if password else "password",
-            "link": link,
-        }
-
-        if not storage or storage == "obs":
-            config["storage"] = {
-                "type": "obs",
-                "url": url if url else "https://api.opensuse.org",
-                "username": username,
-                "password": password if password else "password",
-                "storage": f"home:{username}:storage/files",
-            }
-        elif storage == "lfs":
-            config["storage"] = {
-                "type": "lfs",
-            }
-        else:
-            print(f"Storage type {storage} not valid")
-            sys.exit(-1)
-
-        config["git"] = {"prefix": prefix}
-
-        with config_filename.open("w") as f:
-            config.write(f)
-
-        # Only the user can read and write the file
-        config_filename.chmod(stat.S_IRUSR | stat.S_IWUSR)
-
+    config.read(config_filename)
     return config
 
 
-async def create_config(args, config):
-    # TODO: refactor de code, so the configuration is created here
+def create_config(args):
+    if not args.config:
+        print("Configuration file not provided")
+        sys.exit(-1)
+
+    config = configparser.ConfigParser()
+
+    config["export"] = {
+        "url": args.api,
+        "username": args.username,
+        "password": args.password if args.password else "<password>",
+        "link": args.link,
+    }
+
+    config["import"] = {
+        "url": args.api,
+        "username": args.username,
+        "password": args.password if args.password else "<password>",
+    }
+
+    if args.storage == "obs":
+        config["storage"] = {
+            "type": "obs",
+            "url": args.api,
+            "username": args.username,
+            "password": args.password if args.password else "<password>",
+            "storage": f"home:{args.username}:storage/files",
+        }
+    elif args.storage == "lfs":
+        config["storage"] = {
+            "type": "lfs",
+        }
+    else:
+        print(f"Storage type {args.storage} not valid")
+        sys.exit(-1)
+
+    config["git"] = {"prefix": args.prefix}
+
+    with args.config.open("w") as f:
+        config.write(f)
+
+    # Only the user can read and write the file
+    args.config.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
     print(f"Edit {args.config} to adjust the configuration and passwords")
+
+    return config
 
 
 async def export(args, config):
@@ -1063,15 +1056,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--level", "-l", help="logging level",
     )
-    parser.add_argument(
-        "--api", "-a", help="url for the api",
-    )
-    parser.add_argument(
-        "--username", "-u", help="username for login",
-    )
-    parser.add_argument(
-        "--password", "-p", help="password for login",
-    )
 
     subparser = parser.add_subparsers()
 
@@ -1079,38 +1063,46 @@ if __name__ == "__main__":
         "create-config", help="create default config file"
     )
     parser_create_config.add_argument(
-        "--type",
-        "-t",
-        choices=["obs", "lfs"],
-        default="lfs",
-        help="Type of storage for large files",
+        "--api", "-a", default="https://api.opensuse.org", help="url for the api",
     )
     parser_create_config.add_argument(
-        "--prefix",
-        "-p",
-        default="packages",
-        help="Git directory where all the packages will be stored",
+        "--username", "-u", default=os.getlogin(), help="username for login",
+    )
+    parser_create_config.add_argument(
+        "--password", "-p", help="password for login",
     )
     parser_create_config.add_argument(
         "--link",
         "-l",
         choices=["never", "always", "auto"],
         default="never",
-        help="Expand package links",
+        help="expand package links",
+    )
+    parser_create_config.add_argument(
+        "--storage",
+        "-s",
+        choices=["obs", "lfs"],
+        default="lfs",
+        help="type of storage for large files",
+    )
+    parser_create_config.add_argument(
+        "--prefix",
+        default="packages",
+        help="git directory where all the packages will be stored",
     )
     parser_create_config.set_defaults(func=create_config)
 
     parser_export = subparser.add_parser("export", help="export between OBS and git")
     parser_export.add_argument("project", help="OBS project name")
     parser_export.add_argument(
-        "repository", nargs="?", default=".", help="Git repository directory"
+        "repository", nargs="?", default=".", help="git repository directory"
     )
     parser_export.add_argument("--package", "-p", help="OBS package name")
     parser_export.set_defaults(func=export)
 
     parser_import = subparser.add_parser("import", help="import between git and OBS")
     parser_import.add_argument(
-        "repository", nargs="?", default=".", help="Git repository directory"
+        "repository", nargs="?", default=".", help="git repository directory"
     )
     parser_import.add_argument("project", help="OBS project name")
     parser_import.add_argument("--package", "-p", help="OBS package name")
@@ -1129,17 +1121,8 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(-1)
 
-    # TODO: those parameters should be required only during the creation
-    storage_type = args.type if "type" in args else None
-    git_prefix = args.prefix if "prefix" in args else None
-    link_expand = args.link if "link" in args else None
-    config = read_or_create_config(
-        args.config,
-        args.api,
-        args.username,
-        args.password,
-        storage_type,
-        git_prefix,
-        link_expand,
-    )
-    asyncio.run(args.func(args, config))
+    if args.func == create_config:
+        args.func(args)
+    else:
+        config = read_config(args.config)
+        asyncio.run(args.func(args, config))
