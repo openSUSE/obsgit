@@ -109,12 +109,21 @@ class AsyncOBS:
         if filename_path:
             LOG.debug(f"Start upload {filename_path} to {url_path}")
             with filename_path.open("rb") as f:
-                await self.client.put(f"{self.url}/{url_path}", data=f, params=params)
+                resp = await self.client.put(
+                    f"{self.url}/{url_path}", data=f, params=params
+                )
             LOG.debug(f"End upload {filename_path} to {url_path}")
         elif data:
             LOG.debug(f"Start upload to {url_path}")
-            await self.client.put(f"{self.url}/{url_path}", data=data, params=params)
+            resp = await self.client.put(
+                f"{self.url}/{url_path}", data=data, params=params
+            )
             LOG.debug(f"End upload to {url_path}")
+
+        if resp.status != 200:
+            LOG.warning(
+                f"PUT {resp.status} on {url_path}"
+            )
 
     async def upload(self, project, *path, filename_path=None, data=None, **params):
         """Upload a file to a project or package"""
