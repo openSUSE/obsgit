@@ -310,6 +310,9 @@ class Git:
         )
         return zip(files, md5s)
 
+    def head_hash(self):
+        return pygit2.init_repository(self.path).head.target
+
 
 class StorageOBS:
     """File storage in OBS"""
@@ -842,7 +845,7 @@ class Importer:
                 entry.attrib["name"] = filename
                 entry.attrib["md5"] = md5
 
-            commit_date = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            head_hash = self.git.head_hash()
 
             await self.obs.command(
                 project,
@@ -850,7 +853,7 @@ class Importer:
                 cmd="commitfilelist",
                 data=ET.tostring(directory),
                 user=self.obs.username,
-                comment=f"Import {commit_date}",
+                comment=f"Import {head_hash}",
             )
 
     async def package_metadata(self, project, package):
