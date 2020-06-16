@@ -121,9 +121,7 @@ class AsyncOBS:
             LOG.debug(f"End upload to {url_path}")
 
         if resp.status != 200:
-            LOG.warning(
-                f"PUT {resp.status} on {url_path}"
-            )
+            LOG.warning(f"PUT {resp.status} on {url_path}")
 
     async def upload(self, project, *path, filename_path=None, data=None, **params):
         """Upload a file to a project or package"""
@@ -742,6 +740,11 @@ class Importer:
         packages_obs = set(await self.obs.packages(project))
         packages_git = set(self.git.packages())
         packages_delete = packages_obs - packages_git
+
+        # Order the packages, uploading the links the last
+        packages_git = sorted(
+            packages_git, key=lambda x: (self.git.prefix / x / "_link").exists()
+        )
 
         # To avoid stressing OBS / IBS we group the imports
         # TODO: decide if fully serialize the fetch
