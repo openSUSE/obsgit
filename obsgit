@@ -183,8 +183,11 @@ class AsyncOBS:
         )
 
     async def _xml(self, url_path, **params):
-        async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
-            return ET.fromstring(await resp.read())
+        try:
+            async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
+                return ET.fromstring(await resp.read())
+        except Exception:
+            return ET.fromstring('<directory rev="latest"/>')
 
     async def packages(self, project):
         """List of packages inside an OBS project"""
@@ -732,6 +735,7 @@ class Importer:
         packages_delete = packages_obs - packages_git
 
         # To avoid stressing OBS / IBS we group the imports
+        # TODO: decide if fully serialize the fetch
         group_size = 4
         packages_git = list(packages_git)
         packages_git_groups = [
@@ -909,7 +913,7 @@ def create_config(args):
         print(f"Storage type {args.storage} not valid")
         sys.exit(-1)
 
-    config["git"] = {"prefix": args.prefix}
+    config["git"] = {"prefix": args.prefix, "submodules": args.submodules}
 
     with args.config.open("w") as f:
         config.write(f)
@@ -1089,6 +1093,9 @@ if __name__ == "__main__":
         "--prefix",
         default="packages",
         help="git directory where all the packages will be stored",
+    )
+    parser_create_config.add_argument(
+        "--submodules", help="export each package as a single git repo under SUBMODULE",
     )
     parser_create_config.set_defaults(func=create_config)
 
