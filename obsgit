@@ -854,7 +854,7 @@ class Importer:
         metadata_path = self.git.prefix / package / ".obs"
         metadata = (
             "_meta",
-            "_attribute",
+            # "_attribute",
             # "_history",
         )
         await asyncio.gather(
