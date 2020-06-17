@@ -1023,6 +1023,10 @@ async def export(args, config):
         obs, git, storage, args.skip_project_meta, args.skip_package_meta
     )
     if package:
+        # To have a self consisten unit, maybe we need to export also
+        # the project metadata
+        if not ((git.path / ".obs").exists() or args.skip_project_meta):
+            await exporter.project_metadata(project)
         await exporter.package(project, package)
     else:
         await exporter.project(project)
@@ -1084,6 +1088,9 @@ async def import_(args, config):
         obs, git, storage, args.skip_project_meta, args.skip_package_meta
     )
     if package:
+        # If the project is not present, maybe we want to create it
+        if not (await obs.exists(project) or args.skip_project_meta):
+            await importer.project_metadata(project)
         await importer.package(project, package)
     else:
         await importer.project(project)
