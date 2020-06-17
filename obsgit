@@ -437,7 +437,8 @@ class StorageLFS:
         out = subprocess.run(
             ["git", "lfs", "track"],
             cwd=self.git.path,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             encoding="utf-8",
         )
         for line in out.stdout.splitlines():
@@ -446,7 +447,10 @@ class StorageLFS:
 
     async def is_installed(self):
         out = subprocess.run(
-            ["git", "lfs", "install"], cwd=self.git.path, capture_output=True
+            ["git", "lfs", "install"],
+            cwd=self.git.path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
         is_installed = out.returncode == 0
 
@@ -483,7 +487,8 @@ class StorageLFS:
         subprocess.run(
             ["git", "lfs", "track", filename_path],
             cwd=self.git.path,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
         self.tracked.add(str(filename_path))
         await self.commit()
@@ -501,12 +506,16 @@ class StorageLFS:
         subprocess.run(
             ["git", "lfs", "untrack", filename_path],
             cwd=self.git.path,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
 
     async def commit(self):
         subprocess.run(
-            ["git", "add", ".gitattributes"], cwd=self.git.path, capture_output=True
+            ["git", "add", ".gitattributes"],
+            cwd=self.git.path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
 
 
