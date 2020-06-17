@@ -28,12 +28,12 @@ LOG = logging.getLogger(__name__)
 class AsyncOBS:
     """Minimal asynchronous interface for OBS"""
 
-    def __init__(self, url, username, password, link="auto"):
+    def __init__(self, url, username, password, link="auto", verify_ssl=True):
         self.url = url
         self.username = username
         self.link = link
 
-        conn = aiohttp.TCPConnector(limit=5, limit_per_host=5)
+        conn = aiohttp.TCPConnector(limit=5, limit_per_host=5, verify_ssl=verify_ssl)
         auth = aiohttp.BasicAuth(username, password)
         self.client = aiohttp.ClientSession(connector=conn, auth=auth)
 
@@ -960,6 +960,7 @@ async def export(args, config):
         config["export"]["username"],
         config["export"]["password"],
         config["export"]["link"],
+        verify_ssl=not args.disable_verify_ssl,
     )
 
     if not await obs.authorized(project, package):
@@ -980,6 +981,7 @@ async def export(args, config):
             config["storage"]["url"],
             config["storage"]["username"],
             config["storage"]["password"],
+            verify_ssl=not args.disable_verify_ssl,
         )
         storage_project, storage_package = pathlib.Path(
             config["storage"]["storage"]
@@ -1025,6 +1027,7 @@ async def import_(args, config):
         config["import"]["url"],
         config["import"]["username"],
         config["import"]["password"],
+        verify_ssl=not args.disable_verify_ssl,
     )
 
     git = Git(repository, config["git"]["prefix"])
@@ -1038,6 +1041,7 @@ async def import_(args, config):
             config["storage"]["url"],
             config["storage"]["username"],
             config["storage"]["password"],
+            verify_ssl=not args.disable_verify_ssl,
         )
         storage_project, storage_package = pathlib.Path(
             config["storage"]["storage"]
@@ -1083,6 +1087,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--level", "-l", help="logging level",
+    )
+    parser.add_argument(
+        "--disable-verify-ssl", action="store_true", help="disable SSL verification",
     )
 
     subparser = parser.add_subparsers()
