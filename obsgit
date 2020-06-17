@@ -928,7 +928,7 @@ def create_config(args):
         print(f"Storage type {args.storage} not valid")
         sys.exit(-1)
 
-    config["git"] = {"prefix": args.prefix, "submodules": args.submodules}
+    config["git"] = {"prefix": args.prefix}
 
     with args.config.open("w") as f:
         config.write(f)
@@ -1108,9 +1108,6 @@ if __name__ == "__main__":
         "--prefix",
         default="packages",
         help="git directory where all the packages will be stored",
-    )
-    parser_create_config.add_argument(
-        "--submodules", help="export each package as a single git repo under SUBMODULE",
     )
     parser_create_config.set_defaults(func=create_config)
 
