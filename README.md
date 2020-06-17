@@ -87,6 +87,16 @@ We can also export a single package:
 obsgit export --package gcc openSUSE:Factory ~/Project/factory-git
 ```
 
+Both commands will read the metadata that OBS store for the packages
+and or the project, and will replace the one that is stored in the
+local git repository. Sometimes we do no want to replace the local
+metadata, and for that we can use the `--skip-project-meta` and
+`--skip-package-meta` parameters. For example:
+
+```
+obsgit export --skip-project-meta openSUSE:Factory ~/Project/factory-git
+```
+
 If we are using the `lfs` extension of git, the export will create a
 `.gitattributes` file that reference all the detected binary
 files. You can use the `git lfs` commands to add or remove tracked
@@ -108,4 +118,4 @@ obsgit import ~/Project/factory-git home:user:import
 ```
 
 In the same way, we can use the `--package` parameter to restrict the
-import to a single package.
+import to a single package, and the different skip metadata parameters.
