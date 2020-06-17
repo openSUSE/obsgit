@@ -296,7 +296,7 @@ class Git:
 
     async def files_md5(self, package):
         """List of (filename, md5) for a package"""
-        loop = asyncio.get_running_loop()
+        loop = asyncio.get_event_loop()
         files = [
             file_.parts[-1]
             for file_ in (self.prefix / package).iterdir()
@@ -723,7 +723,7 @@ class Importer:
         self.git = git
         self.storage = storage
 
-    @functools.lru_cache
+    @functools.lru_cache()
     def project_name(self):
         metadata_path = self.git.path / ".obs" / "_meta"
         return ET.parse(metadata_path).getroot().get("name")
@@ -1144,4 +1144,6 @@ if __name__ == "__main__":
         args.func(args)
     else:
         config = read_config(args.config)
-        asyncio.run(args.func(args, config))
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(args.func(args, config))
+        loop.close()
