@@ -119,3 +119,16 @@ obsgit import ~/Project/factory-git home:user:import
 
 In the same way, we can use the `--package` parameter to restrict the
 import to a single package, and the different skip metadata parameters.
+
+During the `export` stage, the tool collected the metadata information
+of the project and for each package. This metadata will contain
+information about users that do not exist in the new imported OBS, and
+also will contain references to the name of the exported project.
+
+The `import` stage will try to re-allocate the project into the new
+OBS location, editing on the fly the metadata. This edit is basically
+a project name replacement: every time the old project name is found
+gets replaced with the new project name. If you edit the project name
+in the metadata, please, conside to update all the metadata
+information for the rest of the files, as `obsgit` will not be able to
+re-allocate the project anymore.

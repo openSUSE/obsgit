@@ -747,9 +747,10 @@ class Importer:
         metadata_path = self.git.path / ".obs" / "_meta"
         return ET.parse(metadata_path).getroot().get("name")
 
-    def replace_project(self, metadata_path, project):
+    def replace_project(self, metadata_path, project, project_name=None):
+        project_name = project_name if project_name else self.project_name()
         with metadata_path.open() as f:
-            return f.read().replace(self.project_name(), project)
+            return f.read().replace(project_name, project)
 
     async def project(self, project):
         # TODO: What if the project in OBS is more modern? Is there a
@@ -791,7 +792,7 @@ class Importer:
 
         metadata = (
             "_meta",
-            "_project",
+            # "_project",
             "_attribute",
             "_config",
             "_pattern",
@@ -884,13 +885,24 @@ class Importer:
             # "_attribute",
             # "_history",
         )
+
+        # Validate that the metadata can be re-allocated
+        project_name = self.project_name()
+        package_project_name = (
+            ET.parse(metadata_path / "_meta").getroot().get("project")
+        )
+        if project_name != package_project_name:
+            LOG.warning(f"Please, edit the metadata for {package}")
+
         await asyncio.gather(
             *(
                 self.obs.upload(
                     project,
                     package,
                     meta,
-                    data=self.replace_project(metadata_path / meta, project),
+                    data=self.replace_project(
+                        metadata_path / meta, project, package_project_name
+                    ),
                 )
                 for meta in metadata
             )
