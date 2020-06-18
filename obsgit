@@ -219,7 +219,7 @@ class AsyncOBS:
                 return [], None
 
             if (
-                project_link != project and self.link == "auto"
+                project_link and project_link != project and self.link == "auto"
             ) or self.link == "always":
                 revision = root.find(".//linkinfo").get("xsrcmd5")
                 root = await self._xml(f"/source/{project}/{package}", rev=revision)
@@ -1057,6 +1057,7 @@ async def import_(args, config):
         config["import"]["url"],
         config["import"]["username"],
         config["import"]["password"],
+        config["export"]["link"],
         verify_ssl=not args.disable_verify_ssl,
     )
 
