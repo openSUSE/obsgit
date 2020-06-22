@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import logging
 import os
+import getpass
 import pathlib
 import shutil
 import stat
@@ -1169,7 +1170,7 @@ if __name__ == "__main__":
         "--api", "-a", default="https://api.opensuse.org", help="url for the api",
     )
     parser_create_config.add_argument(
-        "--username", "-u", default=os.getlogin(), help="username for login",
+        "--username", "-u", default=getpass.getuser(), help="username for login",
     )
     parser_create_config.add_argument(
         "--password", "-p", help="password for login",
