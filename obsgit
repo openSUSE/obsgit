@@ -583,12 +583,21 @@ class Exporter:
         ".macros",
     }
 
-    def __init__(self, obs, git, storage, skip_project_meta, skip_package_meta):
+    def __init__(
+        self,
+        obs,
+        git,
+        storage,
+        skip_project_meta,
+        skip_all_project_meta,
+        skip_all_package_meta,
+    ):
         self.obs = obs
         self.git = git
         self.storage = storage
         self.skip_project_meta = skip_project_meta
-        self.skip_package_meta = skip_package_meta
+        self.skip_all_project_meta = skip_all_project_meta
+        self.skip_all_package_meta = skip_all_package_meta
 
     @staticmethod
     def is_binary(filename):
@@ -622,7 +631,7 @@ class Exporter:
         packages_git = set(self.git.packages())
         packages_delete = packages_git - packages_obs
 
-        if not ((self.git.path / ".obs").exists() and self.skip_project_meta):
+        if not ((self.git.path / ".obs").exists() and self.skip_all_project_meta):
             await self.project_metadata(project)
 
         await asyncio.gather(
@@ -637,13 +646,15 @@ class Exporter:
         metadata_path = self.git.path / ".obs"
         metadata_path.mkdir(exist_ok=True)
 
-        metadata = (
-            "_meta",
+        metadata = [
             "_project",
             "_attribute",
             "_config",
             "_pattern",
-        )
+        ]
+        if not self.skip_project_meta:
+            metadata.append("_meta")
+
         await asyncio.gather(
             *(
                 self.obs.download(project, meta, filename_path=metadata_path / meta)
@@ -659,7 +670,7 @@ class Exporter:
         print(f"{project}/{package} ...")
 
         if not (
-            (self.git.prefix / package / ".obs").exists() and self.skip_package_meta
+            (self.git.prefix / package / ".obs").exists() and self.skip_all_package_meta
         ):
             await self.package_metadata(project, package)
 
@@ -735,12 +746,21 @@ class Exporter:
 
 
 class Importer:
-    def __init__(self, obs, git, storage, skip_project_meta, skip_package_meta):
+    def __init__(
+        self,
+        obs,
+        git,
+        storage,
+        skip_project_meta,
+        skip_all_project_meta,
+        skip_all_package_meta,
+    ):
         self.obs = obs
         self.git = git
         self.storage = storage
         self.skip_project_meta = skip_project_meta
-        self.skip_package_meta = skip_package_meta
+        self.skip_all_project_meta = skip_all_project_meta
+        self.skip_all_package_meta = skip_all_package_meta
 
     @functools.lru_cache()
     def project_name(self):
@@ -758,7 +778,7 @@ class Importer:
 
         # First import the project metadata, as a side effect can
         # create the project
-        if not (await self.obs.exists(project) and self.skip_project_meta):
+        if not (await self.obs.exists(project) and self.skip_all_project_meta):
             await self.project_metadata(project)
 
         packages_obs = set(await self.obs.packages(project))
@@ -790,13 +810,15 @@ class Importer:
     async def project_metadata(self, project):
         metadata_path = self.git.path / ".obs"
 
-        metadata = (
-            "_meta",
+        metadata = [
             # "_project",
             "_attribute",
             "_config",
             "_pattern",
-        )
+        ]
+        if not self.skip_project_meta:
+            metadata.append("_meta")
+
         await asyncio.gather(
             *(
                 self.obs.upload(
@@ -811,7 +833,7 @@ class Importer:
     async def package(self, project, package):
         print(f"{project}/{package} ...")
 
-        if not (await self.obs.exists(project, package) and self.skip_package_meta):
+        if not (await self.obs.exists(project, package) and self.skip_all_package_meta):
             await self.package_metadata(project, package)
 
         package_path = self.git.prefix / package
@@ -1032,12 +1054,17 @@ async def export(args, config):
         raise NotImplementedError(f"Storage {storage_type} not implemented")
 
     exporter = Exporter(
-        obs, git, storage, args.skip_project_meta, args.skip_package_meta
+        obs,
+        git,
+        storage,
+        args.skip_project_meta,
+        args.skip_all_project_meta,
+        args.skip_all_package_meta,
     )
     if package:
         # To have a self consisten unit, maybe we need to export also
         # the project metadata
-        if not ((git.path / ".obs").exists() or args.skip_project_meta):
+        if not ((git.path / ".obs").exists() or args.skip_all_project_meta):
             await exporter.project_metadata(project)
         await exporter.package(project, package)
     else:
@@ -1098,11 +1125,16 @@ async def import_(args, config):
         raise NotImplementedError(f"Storage {storage_type} not implemented")
 
     importer = Importer(
-        obs, git, storage, args.skip_project_meta, args.skip_package_meta
+        obs,
+        git,
+        storage,
+        args.skip_project_meta,
+        args.skip_all_project_meta,
+        args.skip_all_package_meta,
     )
     if package:
         # If the project is not present, maybe we want to create it
-        if not (await obs.exists(project) or args.skip_project_meta):
+        if not (await obs.exists(project) or args.skip_all_project_meta):
             await importer.project_metadata(project)
         await importer.package(project, package)
     else:
@@ -1170,10 +1202,17 @@ if __name__ == "__main__":
     )
     parser_export.add_argument("--package", "-p", help="OBS package name")
     parser_export.add_argument(
-        "--skip-project-meta", action="store_true", help="skip update project metadata",
+        "--skip-project-meta", action="store_true", help="skip update project _meta",
     )
     parser_export.add_argument(
-        "--skip-package-meta", action="store_true", help="skip update package metadata",
+        "--skip-all-project-meta",
+        action="store_true",
+        help="skip update all project metadata",
+    )
+    parser_export.add_argument(
+        "--skip-all-package-meta",
+        action="store_true",
+        help="skip update all package metadata",
     )
     parser_export.set_defaults(func=export)
 
@@ -1184,10 +1223,17 @@ if __name__ == "__main__":
     parser_import.add_argument("project", help="OBS project name")
     parser_import.add_argument("--package", "-p", help="OBS package name")
     parser_import.add_argument(
-        "--skip-project-meta", action="store_true", help="skip update project metadata",
+        "--skip-project-meta", action="store_true", help="skip update project _meta",
     )
     parser_import.add_argument(
-        "--skip-package-meta", action="store_true", help="skip update package metadata",
+        "--skip-all-project-meta",
+        action="store_true",
+        help="skip update all project metadata",
+    )
+    parser_import.add_argument(
+        "--skip-all-package-meta",
+        action="store_true",
+        help="skip update all package metadata",
     )
     parser_import.set_defaults(func=import_)
 

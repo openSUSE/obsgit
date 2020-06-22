@@ -90,8 +90,9 @@ obsgit export --package gcc openSUSE:Factory ~/Project/factory-git
 Both commands will read the metadata that OBS store for the packages
 and or the project, and will replace the one that is stored in the
 local git repository. Sometimes we do no want to replace the local
-metadata, and for that we can use the `--skip-project-meta` and
-`--skip-package-meta` parameters. For example:
+metadata, and for that we can use the `--skip-all-project-meta` and
+`--skip-all-package-meta` parameters, or `--skip-project-meta` is we
+want only to skip the update for the `_meta` metadata. For example:
 
 ```
 obsgit export --skip-project-meta openSUSE:Factory ~/Project/factory-git
