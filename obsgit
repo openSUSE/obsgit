@@ -6,11 +6,10 @@ import configparser
 import datetime
 import fnmatch
 import functools
+import getpass
 import hashlib
 import itertools
 import logging
-import os
-import getpass
 import pathlib
 import shutil
 import stat
@@ -312,7 +311,31 @@ class Git:
         return zip(files, md5s)
 
     def head_hash(self):
-        return pygit2.init_repository(self.path).head.target
+        return pygit2.Repository(self.path).head.target
+
+    def _last_commit_to(self, package):
+        repo = pygit2.Repository(self.path)
+        last = repo[repo.head.target]
+
+        package_path = (self.prefix / package).relative_to(self.path)
+
+        parent_commit = None
+        for commit in repo.walk(last.id, pygit2.GIT_SORT_TIME):
+            if parent_commit:
+                for patch in parent_commit.tree.diff_to_tree(commit.tree):
+                    if package_path in pathlib.Path(patch.delta.new_file.path).parents:
+                        return parent_commit
+            parent_commit = commit
+        return commit
+
+    def last_revision_to(self, package):
+        commit = self._last_commit_to(package)
+        return (
+            commit.oid,
+            commit.author.name,
+            commit.author.email,
+            datetime.datetime.utcfromtimestamp(commit.commit_time),
+        )
 
 
 class StorageOBS:
@@ -768,10 +791,23 @@ class Importer:
         metadata_path = self.git.path / ".obs" / "_meta"
         return ET.parse(metadata_path).getroot().get("name")
 
-    def replace_project(self, metadata_path, project, project_name=None):
+    def replace_project(self, filename_path, project, project_name=None):
         project_name = project_name if project_name else self.project_name()
-        with metadata_path.open() as f:
+        with filename_path.open() as f:
             return f.read().replace(project_name, project)
+
+    @functools.lru_cache()
+    def changes_git_entry(self, package):
+        commit_hash, author, email, commit_date, = self.git.last_revision_to(package)
+        entry = "-" * 67
+        commit_date = commit_date.strftime("%a %b %d %H:%M:%S UTC %Y")
+        entry = f"{entry}\n{commit_date} - {author} <{email}>"
+        entry = f"{entry}\n\n- Last git synchronization: {commit_hash}\n\n"
+        return entry
+
+    def prepend_changes(self, filename_path, package):
+        with filename_path.open() as f:
+            return self.changes_git_entry(package) + f.read()
 
     async def project(self, project):
         # TODO: What if the project in OBS is more modern? Is there a
@@ -831,6 +867,17 @@ class Importer:
             )
         )
 
+    async def _git_files_md5(self, package):
+        files_md5 = []
+        for filename, md5 in await self.git.files_md5(package):
+            filename_path = self.git.prefix / package / filename
+            if filename_path.suffix == ".changes":
+                md5 = hashlib.md5()
+                md5.update(self.prepend_changes(filename_path, package).encode("utf-8"))
+                md5 = md5.hexdigest()
+            files_md5.append((filename, md5))
+        return files_md5
+
     async def package(self, project, package):
         print(f"{project}/{package} ...")
 
@@ -841,7 +888,7 @@ class Importer:
 
         files_md5_obs, _ = await self.obs.files_md5_revision(project, package)
         files_md5_obs = set(files_md5_obs)
-        files_md5_git = set(await self.git.files_md5(package))
+        files_md5_git = set(await self._git_files_md5(package))
 
         # TODO: reading the files is part of StorageXXX class
         meta_file = package_path / ".obs" / "files"
@@ -869,6 +916,18 @@ class Importer:
                     rev="repository",
                 )
                 for filename, _ in files_md5_upload
+                if not filename.endswith(".changes")
+            ),
+            *(
+                self.obs.upload(
+                    project,
+                    package,
+                    filename,
+                    data=self.prepend_changes(package_path / filename, package),
+                    rev="repository",
+                )
+                for filename, _ in files_md5_upload
+                if filename.endswith(".changes")
             ),
             *(
                 self.storage.transfer(
