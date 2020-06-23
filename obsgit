@@ -806,8 +806,8 @@ class Importer:
         return entry
 
     def prepend_changes(self, filename_path, package):
-        with filename_path.open() as f:
-            return self.changes_git_entry(package) + f.read()
+        with filename_path.open("rb") as f:
+            return self.changes_git_entry(package).encode("utf-8") + f.read()
 
     async def project(self, project):
         # TODO: What if the project in OBS is more modern? Is there a
@@ -873,7 +873,7 @@ class Importer:
             filename_path = self.git.prefix / package / filename
             if filename_path.suffix == ".changes":
                 md5 = hashlib.md5()
-                md5.update(self.prepend_changes(filename_path, package).encode("utf-8"))
+                md5.update(self.prepend_changes(filename_path, package))
                 md5 = md5.hexdigest()
             files_md5.append((filename, md5))
         return files_md5
