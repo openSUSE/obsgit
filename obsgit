@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 
 import aiohttp
 import chardet
+
 import pygit2
 
 LOG = logging.getLogger(__name__)
@@ -316,7 +317,9 @@ class Git:
     def _patches(self):
         repo = pygit2.Repository(self.path)
         last = repo[repo.head.target]
-        for commit in repo.walk(last.id, pygit2.GIT_SORT_TIME):
+        for commit in repo.walk(
+            last.id, pygit2.GIT_SORT_TOPOLOGICAL | pygit2.GIT_SORT_TIME
+        ):
             if len(commit.parents) == 1:
                 for patch in commit.tree.diff_to_tree(commit.parents[0].tree):
                     yield commit, patch
@@ -349,7 +352,6 @@ class Git:
 
     def last_revision_to(self, package):
         package_path = (self.prefix / package).relative_to(self.path)
-        print(package_path, self.first_entry[package_path])
         return self.first_entry[package_path]
 
 
