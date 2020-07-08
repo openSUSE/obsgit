@@ -113,14 +113,17 @@ class AsyncOBS:
                     f"{self.url}/{url_path}", data=f, params=params
                 )
             LOG.debug(f"End upload {filename_path} to {url_path}")
-        elif data:
+        elif data is not None:
             LOG.debug(f"Start upload to {url_path}")
             resp = await self.client.put(
                 f"{self.url}/{url_path}", data=data, params=params
             )
             LOG.debug(f"End upload to {url_path}")
+        else:
+            resp = None
+            LOG.warning("Filename nor data provided. Nothing to upload")
 
-        if resp.status != 200:
+        if resp and resp.status != 200:
             LOG.warning(f"PUT {resp.status} on {url_path}")
 
     async def upload(self, project, *path, filename_path=None, data=None, **params):
