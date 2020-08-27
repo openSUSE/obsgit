@@ -25,6 +25,22 @@ import pygit2
 LOG = logging.getLogger(__name__)
 
 
+def retry(func):
+    async def wrapper(*args, **kwargs):
+        to_exception = None
+        retry = 0
+        while retry < 5:
+            try:
+                return await func(*args, **kwargs)
+            except asyncio.TimeoutError as e:
+                to_exception = e
+                retry += 1
+                LOG.warning(f"TimeoutError: retry #{retry}")
+                await asyncio.sleep(0.5)
+        raise to_exception
+    return wrapper
+
+
 class AsyncOBS:
     """Minimal asynchronous interface for OBS"""
 
@@ -46,6 +62,7 @@ class AsyncOBS:
             await self.client.close()
             self.client = None
 
+    @retry
     async def create(self, project, package=None, disabled=False):
         """Create a project and / or package"""
         if await self.authorized(project) and not await self.exists(project):
@@ -89,6 +106,7 @@ class AsyncOBS:
                 f"{self.url}/source/{project}/{package}/_meta", data=data
             )
 
+    @retry
     async def _download(self, url_path, filename_path, **params):
         LOG.debug(f"Start download {url_path} to {filename_path}")
         async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
@@ -105,6 +123,7 @@ class AsyncOBS:
         url_path = "/".join(("source", project, *path))
         await self._download(url_path, filename_path, **params)
 
+    @retry
     async def _upload(self, url_path, filename_path=None, data=None, **params):
         if filename_path:
             LOG.debug(f"Start upload {filename_path} to {url_path}")
@@ -131,6 +150,7 @@ class AsyncOBS:
         url_path = "/".join(("source", project, *path))
         await self._upload(url_path, filename_path=filename_path, data=data, **params)
 
+    @retry
     async def _delete(self, url_path, **params):
         LOG.debug(f"Delete {url_path}")
         await self.client.delete(f"{self.url}/{url_path}", params=params)
@@ -140,6 +160,7 @@ class AsyncOBS:
         url_path = "/".join(("source", project, *path))
         await self._delete(url_path, **params)
 
+    @retry
     async def _command(self, url_path, cmd, filename_path=None, data=None, **params):
         params["cmd"] = cmd
         if filename_path:
@@ -161,6 +182,7 @@ class AsyncOBS:
             url_path, cmd, filename_path=filename_path, data=data, **params
         )
 
+    @retry
     async def _transfer(self, url_path, to_url_path, to_obs=None, **params):
         to_obs = to_obs if to_obs else self
         LOG.debug(f"Start transfer from {url_path} to {to_url_path}")
@@ -192,6 +214,7 @@ class AsyncOBS:
             **params,
         )
 
+    @retry
     async def _xml(self, url_path, **params):
         try:
             async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
@@ -233,6 +256,7 @@ class AsyncOBS:
 
         return files_md5, revision
 
+    @retry
     async def exists(self, project, package=None):
         """Check if a project or package exists in OBS"""
         url = (
@@ -243,6 +267,7 @@ class AsyncOBS:
         async with self.client.head(url) as resp:
             return resp.status != 404
 
+    @retry
     async def authorized(self, project, package=None):
         """Check if the user is authorized to access the project or package"""
         url = (
