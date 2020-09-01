@@ -1201,7 +1201,7 @@ async def import_(args, config):
 
     git = Git(repository, config["git"]["prefix"])
     if not git.exists():
-        print("Project or package not found in build service")
+        print("Local git repository is not valid")
         sys.exit(-1)
     git.analyze_history()
 
