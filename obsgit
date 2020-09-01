@@ -802,7 +802,7 @@ class Exporter:
         metadata = (
             "_meta",
             "_attribute",
-            "_history",
+            # "_history",
         )
         await asyncio.gather(
             *(
