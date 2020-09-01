@@ -239,7 +239,7 @@ class AsyncOBS:
             ).get("project")
 
             if project_link and project_link != project and self.link == "never":
-                print(
+                LOG.error(
                     f"ERROR: Link {project}/{package} pointing outside ({project_link})"
                 )
                 return [], None
@@ -380,7 +380,7 @@ class Git:
 
     def last_revision_to(self, package):
         package_path = (self.prefix / package).relative_to(self.path)
-        return self.first_entry[package_path]
+        return self.first_entry.get(package_path)
 
 
 class StorageOBS:
@@ -843,7 +843,13 @@ class Importer:
 
     @functools.lru_cache()
     def changes_git_entry(self, package):
-        commit_hash, author, email, commit_date, = self.git.last_revision_to(package)
+        last_revision = self.git.last_revision_to(package)
+
+        if not last_revision:
+            LOG.error(f"ERROR: {package} not found in git history")
+            return ""
+
+        commit_hash, author, email, commit_date = self.git.last_revision_to(package)
         entry = "-" * 67
         commit_date = commit_date.strftime("%a %b %d %H:%M:%S UTC %Y")
         entry = f"{entry}\n{commit_date} - {author} <{email}>"
