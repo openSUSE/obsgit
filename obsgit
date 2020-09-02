@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import configparser
+import csv
 import datetime
 import fnmatch
 import functools
@@ -11,6 +12,7 @@ import hashlib
 import itertools
 import logging
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
@@ -38,6 +40,7 @@ def retry(func):
                 LOG.warning(f"TimeoutError: retry #{retry}")
                 await asyncio.sleep(0.5)
         raise to_exception
+
     return wrapper
 
 
@@ -216,6 +219,7 @@ class AsyncOBS:
 
     @retry
     async def _xml(self, url_path, **params):
+        LOG.debug(f"Fetching XML {url_path}")
         try:
             async with self.client.get(f"{self.url}/{url_path}", params=params) as resp:
                 return ET.fromstring(await resp.read())
@@ -255,6 +259,32 @@ class AsyncOBS:
         ]
 
         return files_md5, revision
+
+    async def revision(self, project, package):
+        """Return the active revision of a package"""
+        root = await self._xml(f"/source/{project}/{package}", rev="latest")
+
+        revision = root.get("rev")
+
+        if root.find(".//entry[@name='_link']") is not None:
+            project_link = (
+                await self._xml(f"/source/{project}/{package}/_link", rev="latest")
+            ).get("project")
+
+            if project_link and project_link != project and self.link == "never":
+                LOG.error(
+                    f"ERROR: Link {project}/{package} pointing outside ({project_link})"
+                )
+                return None
+
+            project_link = project_link if project_link else project
+            package_link = root.find(".//linkinfo").get("package")
+            root = await self._xml(
+                f"/source/{project_link}/{package_link}", rev="latest"
+            )
+            revision = root.get("rev")
+
+        return revision
 
     @retry
     async def exists(self, project, package=None):
@@ -813,6 +843,18 @@ class Exporter:
             )
         )
 
+    async def export_revisions(self, project, revisions_csv):
+        """Export the packages revision numbers from OBS to git"""
+        packages_obs = await self.obs.packages(project)
+
+        revisions = await asyncio.gather(
+            *(self.obs.revision(project, package) for package in packages_obs)
+        )
+
+        with revisions_csv.open("w") as f:
+            writer = csv.writer(f)
+            writer.writerows(zip(packages_obs, revisions))
+
 
 class Importer:
     def __init__(
@@ -830,6 +872,8 @@ class Importer:
         self.skip_project_meta = skip_project_meta
         self.skip_all_project_meta = skip_all_project_meta
         self.skip_all_package_meta = skip_all_package_meta
+
+        self._revisions = {}
 
     @functools.lru_cache()
     def project_name(self):
@@ -860,6 +904,24 @@ class Importer:
         with filename_path.open("rb") as f:
             return self.changes_git_entry(package).encode("utf-8") + f.read()
 
+    def load_revisions(self, revisions_csv):
+        try:
+            with revisions_csv.open() as f:
+                reader = csv.reader(f)
+                self._revisions = dict(reader)
+        except Exception:
+            LOG.error(f"ERROR: {revisions_csv} not found or not valid")
+
+    def adjust_release(self, filename_path, package):
+        with filename_path.open("rb") as f:
+            spec = f.read()
+            revision = self._revisions.get(package)
+            if revision:
+                spec = re.sub(
+                    rb"Release\s*:\s*(?:0|<RELEASE>)", f"Release: {revision}".encode("utf-8"), spec
+                )
+            return spec
+
     async def project(self, project):
         # TODO: What if the project in OBS is more modern? Is there a
         # way to detect it?
@@ -888,11 +950,11 @@ class Importer:
         ]
         for packages_git_group in packages_git_groups:
             await asyncio.gather(
-                *(self.package(project, package) for package in packages_git_group),
+                *(self.package(project, package) for package in packages_git_group)
             )
 
         await asyncio.gather(
-            *(self.obs.delete(project, package) for package in packages_delete),
+            *(self.obs.delete(project, package) for package in packages_delete)
         )
 
     async def project_metadata(self, project):
@@ -925,6 +987,10 @@ class Importer:
             if filename_path.suffix == ".changes":
                 md5 = hashlib.md5()
                 md5.update(self.prepend_changes(filename_path, package))
+                md5 = md5.hexdigest()
+            elif filename_path.suffix == ".spec":
+                md5 = hashlib.md5()
+                md5.update(self.adjust_release(filename_path, package))
                 md5 = md5.hexdigest()
             files_md5.append((filename, md5))
         return files_md5
@@ -967,7 +1033,7 @@ class Importer:
                     rev="repository",
                 )
                 for filename, _ in files_md5_upload
-                if not filename.endswith(".changes")
+                if not filename.endswith((".changes", ".spec"))
             ),
             *(
                 self.obs.upload(
@@ -979,6 +1045,17 @@ class Importer:
                 )
                 for filename, _ in files_md5_upload
                 if filename.endswith(".changes")
+            ),
+            *(
+                self.obs.upload(
+                    project,
+                    package,
+                    filename,
+                    data=self.adjust_release(package_path / filename, package),
+                    rev="repository",
+                )
+                for filename, _ in files_md5_upload
+                if filename.endswith(".spec")
             ),
             *(
                 self.storage.transfer(
@@ -1172,14 +1249,17 @@ async def export(args, config):
         args.skip_all_project_meta,
         args.skip_all_package_meta,
     )
-    if package:
-        # To have a self consisten unit, maybe we need to export also
-        # the project metadata
-        if not ((git.path / ".obs").exists() or args.skip_all_project_meta):
-            await exporter.project_metadata(project)
-        await exporter.package(project, package)
+    if args.only_export_revisions:
+        await exporter.export_revisions(project, args.only_export_revisions)
     else:
-        await exporter.project(project)
+        if package:
+            # To have a self consisten unit, maybe we need to export
+            # also the project metadata
+            if not ((git.path / ".obs").exists() or args.skip_all_project_meta):
+                await exporter.project_metadata(project)
+            await exporter.package(project, package)
+        else:
+            await exporter.project(project)
 
     if storage_type == "obs":
         await storage_obs.close()
@@ -1244,6 +1324,10 @@ async def import_(args, config):
         args.skip_all_project_meta,
         args.skip_all_package_meta,
     )
+
+    if args.adjust_release:
+        importer.load_revisions(args.adjust_release)
+
     if package:
         # If the project is not present, maybe we want to create it
         if not (await obs.exists(project) or args.skip_all_project_meta):
@@ -1266,10 +1350,14 @@ if __name__ == "__main__":
         help="configuration file",
     )
     parser.add_argument(
-        "--level", "-l", help="logging level",
+        "--level",
+        "-l",
+        help="logging level",
     )
     parser.add_argument(
-        "--disable-verify-ssl", action="store_true", help="disable SSL verification",
+        "--disable-verify-ssl",
+        action="store_true",
+        help="disable SSL verification",
     )
 
     subparser = parser.add_subparsers()
@@ -1278,13 +1366,21 @@ if __name__ == "__main__":
         "create-config", help="create default config file"
     )
     parser_create_config.add_argument(
-        "--api", "-a", default="https://api.opensuse.org", help="url for the api",
+        "--api",
+        "-a",
+        default="https://api.opensuse.org",
+        help="url for the api",
     )
     parser_create_config.add_argument(
-        "--username", "-u", default=getpass.getuser(), help="username for login",
+        "--username",
+        "-u",
+        default=getpass.getuser(),
+        help="username for login",
     )
     parser_create_config.add_argument(
-        "--password", "-p", help="password for login",
+        "--password",
+        "-p",
+        help="password for login",
     )
     parser_create_config.add_argument(
         "--link",
@@ -1314,7 +1410,9 @@ if __name__ == "__main__":
     )
     parser_export.add_argument("--package", "-p", help="OBS package name")
     parser_export.add_argument(
-        "--skip-project-meta", action="store_true", help="skip update project _meta",
+        "--skip-project-meta",
+        action="store_true",
+        help="skip update project _meta",
     )
     parser_export.add_argument(
         "--skip-all-project-meta",
@@ -1325,6 +1423,12 @@ if __name__ == "__main__":
         "--skip-all-package-meta",
         action="store_true",
         help="skip update all package metadata",
+    )
+    parser_export.add_argument(
+        "--only-export-revisions",
+        type=pathlib.Path,
+        metavar="REVISION.CSV",
+        help="only export the revision numbers from OBS",
     )
     parser_export.set_defaults(func=export)
 
@@ -1335,7 +1439,9 @@ if __name__ == "__main__":
     parser_import.add_argument("project", help="OBS project name")
     parser_import.add_argument("--package", "-p", help="OBS package name")
     parser_import.add_argument(
-        "--skip-project-meta", action="store_true", help="skip update project _meta",
+        "--skip-project-meta",
+        action="store_true",
+        help="skip update project _meta",
     )
     parser_import.add_argument(
         "--skip-all-project-meta",
@@ -1346,6 +1452,12 @@ if __name__ == "__main__":
         "--skip-all-package-meta",
         action="store_true",
         help="skip update all package metadata",
+    )
+    parser_import.add_argument(
+        "--adjust-release",
+        type=pathlib.Path,
+        metavar="REVISION.CSV",
+        help="adjust the release based on the revision history",
     )
     parser_import.set_defaults(func=import_)
 

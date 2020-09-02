@@ -133,3 +133,31 @@ gets replaced with the new project name. If you edit the project name
 in the metadata, please, conside to update all the metadata
 information for the rest of the files, as `obsgit` will not be able to
 re-allocate the project anymore.
+
+
+# Updating the release version of packages
+
+We can export into an external file OBS revision of the packages
+inside a project, and use this number to adjust the revision in the
+spec file transparently.
+
+To fetch only the revision number of the packages, without exporting
+anything else:
+
+```
+obsgit export --only-export-revisions revisions.csv openSUSE:Factory ~/Project/factory-git
+```
+
+This will create a local file `revisions.csv` that will contain the
+name of the package and the last revision (number of commits)
+registered by OBS.
+
+We can use this file to transparently replace the `Release: 0` present
+in some spec files during the import.
+
+```
+obsgit import --adjust-release revisions.csv ~/Project/factory-git home:user:import
+```
+
+Optionally, you can provide a different CSV file generated, maybe,
+analyzing a repository using a different tool.
