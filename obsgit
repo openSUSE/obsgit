@@ -21,7 +21,6 @@ import xml.etree.ElementTree as ET
 
 import aiohttp
 import chardet
-
 import pygit2
 
 LOG = logging.getLogger(__name__)
@@ -689,6 +688,7 @@ class Exporter:
         storage,
         skip_project_meta,
         skip_all_project_meta,
+        skip_package_meta,
         skip_all_package_meta,
     ):
         self.obs = obs
@@ -696,6 +696,7 @@ class Exporter:
         self.storage = storage
         self.skip_project_meta = skip_project_meta
         self.skip_all_project_meta = skip_all_project_meta
+        self.skip_package_meta = skip_package_meta
         self.skip_all_package_meta = skip_all_package_meta
 
     @staticmethod
@@ -829,11 +830,13 @@ class Exporter:
         metadata_path = self.git.prefix / package / ".obs"
         metadata_path.mkdir(exist_ok=True)
 
-        metadata = (
-            "_meta",
+        metadata = [
             "_attribute",
             # "_history",
-        )
+        ]
+        if not self.skip_package_meta:
+            metadata.append("_meta")
+
         await asyncio.gather(
             *(
                 self.obs.download(
@@ -862,15 +865,21 @@ class Importer:
         obs,
         git,
         storage,
+        remove_role_project_meta,
         skip_project_meta,
         skip_all_project_meta,
+        remove_role_package_meta,
+        skip_package_meta,
         skip_all_package_meta,
     ):
         self.obs = obs
         self.git = git
         self.storage = storage
+        self.remove_role_project_meta = remove_role_project_meta
         self.skip_project_meta = skip_project_meta
         self.skip_all_project_meta = skip_all_project_meta
+        self.remove_role_package_meta = remove_role_package_meta
+        self.skip_package_meta = skip_package_meta
         self.skip_all_package_meta = skip_all_package_meta
 
         self._revisions = {}
@@ -880,10 +889,18 @@ class Importer:
         metadata_path = self.git.path / ".obs" / "_meta"
         return ET.parse(metadata_path).getroot().get("name")
 
-    def replace_project(self, filename_path, project, project_name=None):
+    def adjust_metadata(
+        self, filename_path, project, project_name=None, remove_role=False
+    ):
+        # Replace the package name
         project_name = project_name if project_name else self.project_name()
         with filename_path.open() as f:
-            return f.read().replace(project_name, project)
+            meta = f.read().replace(project_name, project)
+
+        if remove_role:
+            meta = re.sub("<person .*?>", "", meta)
+            meta = re.sub("<group .*?>", "", meta)
+        return meta
 
     @functools.lru_cache()
     def changes_git_entry(self, package):
@@ -918,7 +935,9 @@ class Importer:
             revision = self._revisions.get(package)
             if revision:
                 spec = re.sub(
-                    rb"Release\s*:\s*(?:0|<RELEASE>)", f"Release: {revision}".encode("utf-8"), spec
+                    rb"Release\s*:\s*(?:0|<RELEASE>)",
+                    f"Release: {revision}".encode("utf-8"),
+                    spec,
                 )
             return spec
 
@@ -974,7 +993,11 @@ class Importer:
                 self.obs.upload(
                     project,
                     meta,
-                    data=self.replace_project(metadata_path / meta, project),
+                    data=self.adjust_metadata(
+                        metadata_path / meta,
+                        project,
+                        remove_role=self.remove_role_project_meta,
+                    ),
                 )
                 for meta in metadata
             )
@@ -1110,8 +1133,11 @@ class Importer:
                     project,
                     package,
                     meta,
-                    data=self.replace_project(
-                        metadata_path / meta, project, package_project_name
+                    data=self.adjust_metadata(
+                        metadata_path / meta,
+                        project,
+                        package_project_name,
+                        remove_role=args.remove_role_package_meta,
                     ),
                 )
                 for meta in metadata
@@ -1247,6 +1273,7 @@ async def export(args, config):
         storage,
         args.skip_project_meta,
         args.skip_all_project_meta,
+        args.skip_package_meta,
         args.skip_all_package_meta,
     )
     if args.only_export_revisions:
@@ -1320,8 +1347,11 @@ async def import_(args, config):
         obs,
         git,
         storage,
+        args.remove_role_project_meta,
         args.skip_project_meta,
         args.skip_all_project_meta,
+        args.remove_role_package_meta,
+        args.skip_package_meta,
         args.skip_all_package_meta,
     )
 
@@ -1420,6 +1450,11 @@ if __name__ == "__main__":
         help="skip update all project metadata",
     )
     parser_export.add_argument(
+        "--skip-package-meta",
+        action="store_true",
+        help="skip update package _meta",
+    )
+    parser_export.add_argument(
         "--skip-all-package-meta",
         action="store_true",
         help="skip update all package metadata",
@@ -1439,6 +1474,11 @@ if __name__ == "__main__":
     parser_import.add_argument("project", help="OBS project name")
     parser_import.add_argument("--package", "-p", help="OBS package name")
     parser_import.add_argument(
+        "--remove-role-project-meta",
+        action="store_true",
+        help="remove <person> and <group> from project _meta",
+    )
+    parser_import.add_argument(
         "--skip-project-meta",
         action="store_true",
         help="skip update project _meta",
@@ -1447,6 +1487,16 @@ if __name__ == "__main__":
         "--skip-all-project-meta",
         action="store_true",
         help="skip update all project metadata",
+    )
+    parser_import.add_argument(
+        "--remove-role-package-meta",
+        action="store_true",
+        help="remove <person> and <group> from package _meta",
+    )
+    parser_import.add_argument(
+        "--skip-package-meta",
+        action="store_true",
+        help="skip update package _meta",
     )
     parser_import.add_argument(
         "--skip-all-package-meta",
