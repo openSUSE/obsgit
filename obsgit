@@ -9,6 +9,7 @@ import fnmatch
 import functools
 import getpass
 import hashlib
+import http
 import itertools
 import logging
 import pathlib
@@ -37,6 +38,12 @@ def retry(func):
                 to_exception = e
                 retry += 1
                 LOG.warning(f"TimeoutError: retry #{retry}")
+                await asyncio.sleep(0.5)
+            except http.client.HTTPException as e:
+                to_exception = e
+                # Try only one more time
+                retry = 6
+                LOG.error("HTTPException: retry one more time")
                 await asyncio.sleep(0.5)
         raise to_exception
 
@@ -144,8 +151,8 @@ class AsyncOBS:
             resp = None
             LOG.warning("Filename nor data provided. Nothing to upload")
 
-        if resp and resp.status != 200:
-            LOG.warning(f"PUT {resp.status} on {url_path}")
+        if resp and resp.status >= 400:
+            raise http.client.HTTPException(f"PUT {resp.status} on {url_path}")
 
     async def upload(self, project, *path, filename_path=None, data=None, **params):
         """Upload a file to a project or package"""
@@ -981,9 +988,9 @@ class Importer:
 
         metadata = [
             # "_project",
-            "_attribute",
+            # "_attribute",
             "_config",
-            "_pattern",
+            # "_pattern",
         ]
         if not self.skip_project_meta:
             metadata.append("_meta")
