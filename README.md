@@ -38,8 +38,8 @@ link = never
 [import]
 # API URL for the build system where we will upload the project (from git)
 url = https://api.opensuse.org
-username = aplanas
-password = opensuse2013 
+username = user
+password = password
 
 [git]
 # Directory name used to store all the packages. If missing, the packages
@@ -53,8 +53,8 @@ prefix = packages
 type = lfs
 # (obs) API URL for the build system to store files
 # url = https://api.opensuse.org
-# username = aplanas
-# password = opensuse2013
+# username = user
+# password = password
 # (obs) Repository and package where to store the files
 # storage = home:user:storage/files
 ```
