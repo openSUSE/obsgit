@@ -331,7 +331,9 @@ class Git:
     def create(self):
         """Create a local git repository"""
         self.prefix.mkdir(parents=True, exist_ok=True)
-        pygit2.init_repository(self.path)
+        # Convert the path to string, to avoid some limitations in
+        # older pygit2
+        pygit2.init_repository(str(self.path))
 
     async def delete(self, package, filename=None):
         """Delete a package or a file from a git repository"""
