@@ -378,10 +378,10 @@ class Git:
         return zip(files, md5s)
 
     def head_hash(self):
-        return pygit2.Repository(self.path).head.target
+        return pygit2.Repository(str(self.path)).head.target
 
     def _patches(self):
-        repo = pygit2.Repository(self.path)
+        repo = pygit2.Repository(str(self.path))
         last = repo[repo.head.target]
         for commit in repo.walk(
             last.id, pygit2.GIT_SORT_TOPOLOGICAL | pygit2.GIT_SORT_TIME
