@@ -988,14 +988,25 @@ class Importer:
     async def project_metadata(self, project):
         metadata_path = self.git.path / ".obs"
 
+        # When creating a new project, we should add first the _meta
+        # file, and later the rest
+        if not self.skip_project_meta:
+            await self.obs.upload(
+                project,
+                "_meta",
+                data=self.adjust_metadata(
+                    metadata_path / "_meta",
+                    project,
+                    remove_role=self.remove_role_project_meta,
+                ),
+            )
+
         metadata = [
             # "_project",
             # "_attribute",
             "_config",
             # "_pattern",
         ]
-        if not self.skip_project_meta:
-            metadata.append("_meta")
 
         await asyncio.gather(
             *(
