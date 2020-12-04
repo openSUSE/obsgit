@@ -1,5 +1,4 @@
 import contextlib
-import importlib
 import os
 import pathlib
 import tempfile
@@ -7,14 +6,7 @@ import unittest
 import unittest.mock
 import xml.etree.ElementTree as ET
 
-# Import the "obsgit" CLI as a module
-file_name = pathlib.Path(pathlib.Path(__file__).parent, "..", "obsgit").resolve()
-module_name = file_name.name
-spec = importlib.util.spec_from_loader(
-    module_name, importlib.machinery.SourceFileLoader(module_name, str(file_name))
-)
-obsgit = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(obsgit)
+from obsgit import obsgit
 
 
 class TestReadConfig(unittest.TestCase):

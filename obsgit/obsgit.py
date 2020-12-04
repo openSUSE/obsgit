@@ -1391,7 +1391,7 @@ async def import_(args, config):
     await obs.close()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="OBS-git simple bridge tool")
     parser.add_argument(
         "--config",
@@ -1551,3 +1551,7 @@ if __name__ == "__main__":
         loop = asyncio.get_event_loop()
         loop.run_until_complete(args.func(args, config))
         loop.close()
+
+
+if __name__ == "__main__":
+    main()

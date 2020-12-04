@@ -1,19 +1,30 @@
 # obsgit
+
 Simple bridge between Open Build Server and git.
 
 This tools can be used to export a project stored in OBS into a local
 git repository, and later imported from git to the same (or different)
 OBS server.
 
+## Instalation
 
-# Configuration
+Install `obsgit` using Python Pip:
+
+```bash
+pip install git+https://github.com/aplanas/obsgit.git
+```
+
+After installed, `obsgit` will be registered as a command line tool.
+
+## Configuration
+
 `obsgit` requires a configuration file to adjust the parameters of the
 different OBS services, the remote storage for big files, and some
 configuration of the layout of the local git repository.
 
 You can generate a default configuration file with:
 
-```
+```bash
 obsgit create-config
 ```
 
@@ -21,7 +32,7 @@ This command accept parameters to adjust the configuration, but you
 can also edit the generated file to set the passwords and the
 different URL for the APIs:
 
-```
+```ini
 [export]
 # API URL for the build system where we will export from (to git)
 url = https://api.opensuse.org
@@ -59,8 +70,7 @@ type = lfs
 # storage = home:user:storage/files
 ```
 
-
-# Export from OBS to git
+## Export from OBS to git
 
 The `export` sub-command can be used to read all the metadata of a OBS
 project, the list of packages and the content, and download them in a
@@ -72,7 +82,7 @@ spec files, patches, etc).
 
 To export a full project:
 
-```
+```bash
 obsgit export openSUSE:Factory ~/Project/factory-git
 ```
 
@@ -83,7 +93,7 @@ project.
 
 We can also export a single package:
 
-```
+```bash
 obsgit export --package gcc openSUSE:Factory ~/Project/factory-git
 ```
 
@@ -94,7 +104,7 @@ metadata, and for that we can use the `--skip-all-project-meta` and
 `--skip-all-package-meta` parameters, or `--skip-project-meta` is we
 want only to skip the update for the `_meta` metadata. For example:
 
-```
+```bash
 obsgit export --skip-project-meta openSUSE:Factory ~/Project/factory-git
 ```
 
@@ -107,14 +117,13 @@ When the storage is configured to use `obs`, the binary files are
 uploaded into the storage server, and tracked in the
 `<package>/.obs/files` metadata file.
 
-
-# Import from git to OBS
+## Import from git to OBS
 
 We can re-create the original project that we exported from OBS to git
 into a different build service. To do that we can use the `import`
 sub-command:
 
-```
+```bash
 obsgit import ~/Project/factory-git home:user:import
 ```
 
@@ -134,8 +143,7 @@ in the metadata, please, conside to update all the metadata
 information for the rest of the files, as `obsgit` will not be able to
 re-allocate the project anymore.
 
-
-# Updating the release version of packages
+## Updating the release version of packages
 
 We can export into an external file OBS revision of the packages
 inside a project, and use this number to adjust the revision in the
@@ -144,7 +152,7 @@ spec file transparently.
 To fetch only the revision number of the packages, without exporting
 anything else:
 
-```
+```bash
 obsgit export --only-export-revisions revisions.csv openSUSE:Factory ~/Project/factory-git
 ```
 
@@ -155,7 +163,7 @@ registered by OBS.
 We can use this file to transparently replace the `Release: 0` present
 in some spec files during the import.
 
-```
+```bash
 obsgit import --adjust-release revisions.csv ~/Project/factory-git home:user:import
 ```
 
