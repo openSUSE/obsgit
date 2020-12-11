@@ -1157,7 +1157,7 @@ class Importer:
                         metadata_path / meta,
                         project,
                         package_project_name,
-                        remove_role=args.remove_role_package_meta,
+                        remove_role=self.remove_role_package_meta,
                     ),
                 )
                 for meta in metadata
