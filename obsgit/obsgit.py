@@ -880,6 +880,7 @@ class Importer:
         remove_role_package_meta,
         skip_package_meta,
         skip_all_package_meta,
+        skip_changes_commit_hash,
     ):
         self.obs = obs
         self.git = git
@@ -890,6 +891,7 @@ class Importer:
         self.remove_role_package_meta = remove_role_package_meta
         self.skip_package_meta = skip_package_meta
         self.skip_all_package_meta = skip_all_package_meta
+        self.skip_changes_commit_hash = skip_changes_commit_hash
 
         self._revisions = {}
 
@@ -928,7 +930,10 @@ class Importer:
 
     def prepend_changes(self, filename_path, package):
         with filename_path.open("rb") as f:
-            return self.changes_git_entry(package).encode("utf-8") + f.read()
+            changes = f.read()
+            if not self.skip_changes_commit_hash:
+                changes = self.changes_git_entry(package).encode("utf-8") + changes
+            return changes
 
     def load_revisions(self, revisions_csv):
         try:
@@ -1373,6 +1378,7 @@ async def import_(args, config):
         args.remove_role_package_meta,
         args.skip_package_meta,
         args.skip_all_package_meta,
+        args.skip_changes_commit_hash,
     )
 
     if args.adjust_release:
@@ -1529,6 +1535,12 @@ def main():
         metavar="REVISION.CSV",
         help="adjust the release based on the revision history",
     )
+    parser_import.add_argument(
+        "--skip-changes-commit-hash",
+        action="store_true",
+        help="do not prepend .changes files with latest git commit hash",
+    )
+
     parser_import.set_defaults(func=import_)
 
     args = parser.parse_args()
