@@ -930,10 +930,10 @@ class Importer:
 
     def prepend_changes(self, filename_path, package):
         with filename_path.open("rb") as f:
-            if self.skip_changes_commit_hash:
-                return f.read()
-            else:
-                return self.changes_git_entry(package).encode("utf-8") + f.read()
+            changes = f.read()
+            if not self.skip_changes_commit_hash:
+                changes = self.changes_git_entry(package).encode("utf-8") + changes
+            return changes
 
     def load_revisions(self, revisions_csv):
         try:
