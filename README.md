@@ -1,20 +1,18 @@
 # obsgit
 
-Simple bridge between Open Build Server and git.
-
-This tools can be used to export a project stored in OBS into a local
+A simple bridge between Open Build Server and git.
+These tools can be used to export a project stored in OBS into a local
 git repository, and later imported from git to the same (or different)
 OBS server.
 
-## Instalation
-
+## Installation
 Install `obsgit` using Python Pip:
 
 ```bash
 pip install git+https://github.com/aplanas/obsgit.git
 ```
 
-After installed, `obsgit` will be registered as a command line tool.
+After installed, `obsgit` will be registered as a command-line tool.
 
 ## Configuration
 
@@ -28,7 +26,7 @@ You can generate a default configuration file with:
 obsgit create-config
 ```
 
-This command accept parameters to adjust the configuration, but you
+This command accepts parameters to adjust the configuration, but you
 can also edit the generated file to set the passwords and the
 different URL for the APIs:
 
@@ -72,12 +70,12 @@ type = lfs
 
 ## Export from OBS to git
 
-The `export` sub-command can be used to read all the metadata of a OBS
+The `export` sub-command can be used to read all the metadata of an OBS
 project, the list of packages and the content, and download them in a
-local git repository. This information is organized with to goals in
+local git repository. This information is organized with goals in
 mind. One is to collect all the information required to re-publish the
 project and packages in a different OBS instance, and the other one is
-to delegate into git the management of the package assets (change log,
+to delegate into git the management of the package assets (changelog,
 spec files, patches, etc).
 
 To export a full project:
@@ -97,10 +95,10 @@ We can also export a single package:
 obsgit export --package gcc openSUSE:Factory ~/Project/factory-git
 ```
 
-Both commands will read the metadata that OBS store for the packages
+Both commands will read the metadata that OBS stores for the packages
 and or the project, and will replace the one that is stored in the
-local git repository. Sometimes we do no want to replace the local
-metadata, and for that we can use the `--skip-all-project-meta` and
+local git repository. Sometimes we do not want to replace the local
+metadata, and for that, we can use the `--skip-all-project-meta` and
 `--skip-all-package-meta` parameters, or `--skip-project-meta` is we
 want only to skip the update for the `_meta` metadata. For example:
 
@@ -109,12 +107,12 @@ obsgit export --skip-project-meta openSUSE:Factory ~/Project/factory-git
 ```
 
 If we are using the `lfs` extension of git, the export will create a
-`.gitattributes` file that reference all the detected binary
+`.gitattributes` file that references all the detected binary
 files. You can use the `git lfs` commands to add or remove tracked
 files, add them to the index and do the commit.
 
 When the storage is configured to use `obs`, the binary files are
-uploaded into the storage server, and tracked in the
+uploaded into the storage server and tracked in the
 `<package>/.obs/files` metadata file.
 
 ## Import from git to OBS
@@ -139,7 +137,7 @@ The `import` stage will try to re-allocate the project into the new
 OBS location, editing on the fly the metadata. This edit is basically
 a project name replacement: every time the old project name is found
 gets replaced with the new project name. If you edit the project name
-in the metadata, please, conside to update all the metadata
+in the metadata, please, consider updating all the metadata
 information for the rest of the files, as `obsgit` will not be able to
 re-allocate the project anymore.
 
