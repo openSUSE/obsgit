@@ -131,18 +131,20 @@ class AsyncOBS:
         await self._download(url_path, filename_path, **params)
 
     @retry
-    async def _upload(self, url_path, filename_path=None, data=None, **params):
+    async def _upload(
+        self, url_path, filename_path=None, data=None, headers=None, **params
+    ):
         if filename_path:
             LOG.debug(f"Start upload {filename_path} to {url_path}")
             with filename_path.open("rb") as f:
                 resp = await self.client.put(
-                    f"{self.url}/{url_path}", data=f, params=params
+                    f"{self.url}/{url_path}", data=f, headers=headers, params=params
                 )
             LOG.debug(f"End upload {filename_path} to {url_path}")
         elif data is not None:
             LOG.debug(f"Start upload to {url_path}")
             resp = await self.client.put(
-                f"{self.url}/{url_path}", data=data, params=params
+                f"{self.url}/{url_path}", data=data, headers=headers, params=params
             )
             LOG.debug(f"End upload to {url_path}")
         else:
@@ -152,10 +154,14 @@ class AsyncOBS:
         if resp and resp.status >= 400:
             raise http.client.HTTPException(f"PUT {resp.status} on {url_path}")
 
-    async def upload(self, project, *path, filename_path=None, data=None, **params):
+    async def upload(
+        self, project, *path, filename_path=None, data=None, headers=None, **params
+    ):
         """Upload a file to a project or package"""
         url_path = "/".join(("source", project, *path))
-        await self._upload(url_path, filename_path=filename_path, data=data, **params)
+        await self._upload(
+            url_path, filename_path=filename_path, data=data, headers=headers, **params
+        )
 
     @retry
     async def _delete(self, url_path, **params):
@@ -1079,7 +1085,7 @@ class Importer:
                     rev="repository",
                 )
                 for filename, _ in files_md5_upload
-                if not filename.endswith((".changes", ".spec"))
+                if not filename.endswith((".changes", ".spec", ".json"))
             ),
             *(
                 self.obs.upload(
@@ -1102,6 +1108,18 @@ class Importer:
                 )
                 for filename, _ in files_md5_upload
                 if filename.endswith(".spec")
+            ),
+            *(
+                self.obs.upload(
+                    project,
+                    package,
+                    filename,
+                    filename_path=package_path / filename,
+                    headers={"content-type": "text/xml"},
+                    rev="repository",
+                )
+                for filename, _ in files_md5_upload
+                if filename.endswith(".json")
             ),
             *(
                 self.storage.transfer(
