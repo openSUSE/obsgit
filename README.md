@@ -1,6 +1,7 @@
 # obsgit
 
 A simple bridge between Open Build Server and git.
+
 These tools can be used to export a project stored in OBS into a local
 git repository, and later imported from git to the same (or different)
 OBS server.
@@ -70,9 +71,9 @@ type = lfs
 
 ## Export from OBS to git
 
-The `export` sub-command can be used to read all the metadata of an OBS
-project, the list of packages and the content, and download them in a
-local git repository. This information is organized with goals in
+The `export` sub-command can be used to read all the metadata of an
+OBS project, the list of packages and the content, and download them
+in a local git repository. This information is organized with goals in
 mind. One is to collect all the information required to re-publish the
 project and packages in a different OBS instance, and the other one is
 to delegate into git the management of the package assets (changelog,
@@ -99,7 +100,7 @@ Both commands will read the metadata that OBS stores for the packages
 and or the project, and will replace the one that is stored in the
 local git repository. Sometimes we do not want to replace the local
 metadata, and for that, we can use the `--skip-all-project-meta` and
-`--skip-all-package-meta` parameters, or `--skip-project-meta` is we
+`--skip-all-package-meta` parameters, or `--skip-project-meta` if we
 want only to skip the update for the `_meta` metadata. For example:
 
 ```bash
@@ -126,7 +127,8 @@ obsgit import ~/Project/factory-git home:user:import
 ```
 
 In the same way, we can use the `--package` parameter to restrict the
-import to a single package, and the different skip metadata parameters.
+import to a single package, and the different skip metadata
+parameters.
 
 During the `export` stage, the tool collected the metadata information
 of the project and for each package. This metadata will contain
