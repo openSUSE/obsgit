@@ -31,6 +31,7 @@ setuptools.setup(
     },
     install_requires=[
         "aiohttp",
+        "chardet",
         "pygit2",
     ],
 )
