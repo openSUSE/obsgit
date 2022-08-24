@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import collections
 import configparser
 import csv
 import datetime
@@ -16,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import aiohttp
@@ -48,17 +50,146 @@ def retry(func):
     return wrapper
 
 
+# Class based on BasicAuth from aiohttp
+class SSHAuth(aiohttp.BasicAuth):
+    """Http SSH authentication helper."""
+
+    def __new__(cls, login, password="", ssh_key="", encoding="latin1"):
+        if login is None:
+            raise ValueError("None is not allowed as login value")
+
+        if password is None:
+            raise ValueError("None is not allowed as password value")
+
+        if ssh_key is None:
+            raise ValueError("None is not allowed as ssh_key value")
+
+        if ":" in login:
+            raise ValueError('A ":" is not allowed in login (RFC 1945#section-11.1)')
+
+        auth = super().__new__(cls, login, password, encoding)
+        auth.ssh_key = ssh_key
+        auth.authorization = ""
+        auth.already_auth = False
+
+        return auth
+
+    def encode(self):
+        """Encode credentials."""
+        if self.authorization and not self.already_auth:
+            self.already_auth = True
+        return self.authorization
+
+    def assert_signature_header(self, headers):
+        header = [h for h in headers.getall("WWW-Authenticate") if "Signature" in h]
+        if not header:
+            raise Exception("Signature authentication not supported in the server")
+        header = header[0]
+
+        if "Use your developer account" not in header:
+            raise Exception("Signature realm not expected")
+        if "(created)" not in header:
+            raise Exception("Signature header not expected")
+
+    def ssh_sign(self, namespace, data):
+        cmd = [
+            "ssh-keygen",
+            "-Y",
+            "sign",
+            "-f",
+            self.ssh_key,
+            "-q",
+            "-n",
+            namespace,
+            "-P",
+            self.password,
+        ]
+        out = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            input=data,
+            stderr=subprocess.STDOUT,
+            encoding=self.encoding,
+        )
+        lines = out.stdout.splitlines()
+
+        # The signature has a header and a footer.  Extract them and
+        # validate the output.
+        header, signature, footer = lines[0], lines[1:-1], lines[-1]
+        if header != "-----BEGIN SSH SIGNATURE-----":
+            raise Exception(f"Error signing the data: {out.stdout}")
+        if footer != "-----END SSH SIGNATURE-----":
+            raise Exception(f"Error signing the data: {out.stdout}")
+
+        return "".join(signature)
+
+    def set_challenge(self, headers):
+        # TODO: the specification support different headers, and the
+        # real / namespace should be extracted from the headers
+        #
+        # For more complete implementations, check:
+        #
+        #  * https://datatracker.ietf.org/doc/draft-ietf-httpbis-message-signatures/
+        #  * https://github.com/openSUSE/osc/pull/1032
+        #  * https://github.com/crazyscientist/osc-tiny
+        #
+        self.assert_signature_header(headers)
+        created = int(time.time())
+        namespace = "Use your developer account"
+        data = f"(created): {created}"
+        signature = self.ssh_sign(namespace, data)
+
+        self.authorization = (
+            f'Signature KeyId="{self.login}",algorithm="ssh",signature={signature},'
+            f'headers="(created)",created={created}'
+        )
+
+
+class ClientRequest(aiohttp.ClientRequest):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def update_auth(self, auth):
+        if auth and isinstance(auth, SSHAuth):
+            # We do not want to include the authorization header in
+            # each request, as it would overload the server.  In fact,
+            # we already have a cookie in the session that will
+            # validate subsequent requests.
+            if auth.already_auth:
+                return
+        super().update_auth(auth)
+
+
 class AsyncOBS:
     """Minimal asynchronous interface for OBS"""
 
-    def __init__(self, url, username, password, link="auto", verify_ssl=True):
+    def __init__(
+        self, url, username, password, ssh_key=None, link="auto", verify_ssl=True
+    ):
         self.url = url
         self.username = username
         self.link = link
 
+        # The key can come from a parameter or from the config file.
+        # This last one only accept "strings", as is a ConfigParser
+        if ssh_key:
+            ssh_key = pathlib.Path(ssh_key)
+
+        if ssh_key and not ssh_key.exists():
+            # Give a second chance in user directory
+            new_ssh_key = pathlib.Path.home() / ".ssh" / ssh_key
+            if not new_ssh_key.exists():
+                raise Exception(f"SSH key not found: {ssh_key}")
+            ssh_key = new_ssh_key
+
         conn = aiohttp.TCPConnector(limit=5, limit_per_host=5, verify_ssl=verify_ssl)
-        auth = aiohttp.BasicAuth(username, password)
-        self.client = aiohttp.ClientSession(connector=conn, auth=auth)
+        if ssh_key:
+            auth = SSHAuth(username, password, ssh_key)
+        else:
+            auth = aiohttp.BasicAuth(username, password)
+        self.client = aiohttp.ClientSession(
+            connector=conn, request_class=ClientRequest, auth=auth
+        )
 
     async def close(self):
         """Close the client session"""
@@ -316,6 +447,10 @@ class AsyncOBS:
             else f"{self.url}/source/{project}"
         )
         async with self.client.head(url) as resp:
+            if isinstance(self.client.auth, SSHAuth):
+                if not self.client.auth.authorization:
+                    self.client.auth.set_challenge(resp.headers)
+                    return await self.authorized(project, package)
             return resp.status != 401
 
 
@@ -1192,7 +1327,7 @@ def read_config(config_filename):
         print("Configuration file not provided")
         sys.exit(-1)
 
-    if not pathlib.Path(config_filename).exists():
+    if not config_filename.exists():
         print(f"Configuration file {config_filename} not found.")
         print("Use create_config to create a new configuration file")
         sys.exit(-1)
@@ -1213,6 +1348,7 @@ def create_config(args):
         "url": args.api,
         "username": args.username,
         "password": args.password if args.password else "<password>",
+        "ssh-key": args.ssh_key if args.ssh_key else "<ssh-key-path>",
         "link": args.link,
     }
 
@@ -1220,6 +1356,7 @@ def create_config(args):
         "url": args.api,
         "username": args.username,
         "password": args.password if args.password else "<password>",
+        "ssh-key": args.ssh_key if args.ssh_key else "<ssh-key-path>",
     }
 
     if args.storage == "obs":
@@ -1228,6 +1365,7 @@ def create_config(args):
             "url": args.api,
             "username": args.username,
             "password": args.password if args.password else "<password>",
+            "ssh-key": args.ssh_key if args.ssh_key else "<ssh-key-path>",
             "storage": f"home:{args.username}:storage/files",
         }
     elif args.storage == "lfs":
@@ -1260,6 +1398,7 @@ async def export(args, config):
         config["export"]["url"],
         config["export"]["username"],
         config["export"]["password"],
+        config["export"]["ssh-key"],
         config["export"]["link"],
         verify_ssl=not args.disable_verify_ssl,
     )
@@ -1282,6 +1421,7 @@ async def export(args, config):
             config["storage"]["url"],
             config["storage"]["username"],
             config["storage"]["password"],
+            config["storage"]["ssh-key"],
             verify_ssl=not args.disable_verify_ssl,
         )
         storage_project, storage_package = pathlib.Path(
@@ -1343,6 +1483,7 @@ async def import_(args, config):
         config["import"]["url"],
         config["import"]["username"],
         config["import"]["password"],
+        config["import"]["ssh-key"],
         config["export"]["link"],
         verify_ssl=not args.disable_verify_ssl,
     )
@@ -1359,6 +1500,7 @@ async def import_(args, config):
             config["storage"]["url"],
             config["storage"]["username"],
             config["storage"]["password"],
+            config["storage"]["ssh-key"],
             verify_ssl=not args.disable_verify_ssl,
         )
         storage_project, storage_package = pathlib.Path(
@@ -1418,6 +1560,7 @@ def main():
     parser.add_argument(
         "--config",
         "-c",
+        type=pathlib.Path,
         default=pathlib.Path("~", ".obsgit").expanduser(),
         help="configuration file",
     )
@@ -1452,7 +1595,13 @@ def main():
     parser_create_config.add_argument(
         "--password",
         "-p",
-        help="password for login",
+        help="password for login or SSH key passphrase",
+    )
+    parser_create_config.add_argument(
+        "--ssh-key",
+        "-k",
+        type=pathlib.Path,
+        help="SSH key file for login",
     )
     parser_create_config.add_argument(
         "--link",

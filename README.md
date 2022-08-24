@@ -38,6 +38,8 @@ url = https://api.opensuse.org
 # Login credentials
 username = user
 password = password
+# Only if OBS is configured with SSH authentication (like in IBS)
+ssh-key = id_rsa
 # What to do when obsgit read a linked package:
 # - always: always expand the _link, downloading the expanded source
 # - never: never expand, download only the _link file. If link is
