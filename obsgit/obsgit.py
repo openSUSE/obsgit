@@ -1334,6 +1334,15 @@ def read_config(config_filename):
 
     config = configparser.ConfigParser()
     config.read(config_filename)
+
+    # Old configuration files do not have the new ssh-key parameter.
+    # Provide a default value.
+    for section in ("export", "import"):
+        if "ssh-key" not in config[section]:
+            config[section]["ssh-key"] = ""
+    if config["storage"]["type"] == "obs" and "ssh-key" not in config["storage"]:
+        config["storage"]["ssh-key"] = ""
+
     return config
 
 
