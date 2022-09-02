@@ -447,9 +447,9 @@ class AsyncOBS:
             else f"{self.url}/source/{project}"
         )
         async with self.client.head(url) as resp:
-            if isinstance(self.client.auth, SSHAuth):
-                if not self.client.auth.authorization:
-                    self.client.auth.set_challenge(resp.headers)
+            if isinstance(self.client._default_auth, SSHAuth):
+                if not self.client._default_auth.authorization:
+                    self.client._default_auth.set_challenge(resp.headers)
                     return await self.authorized(project, package)
             return resp.status != 401
 
