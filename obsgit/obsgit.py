@@ -502,6 +502,7 @@ class Git:
 
     async def files_md5(self, package):
         """List of (filename, md5) for a package"""
+        # TODO: For Python >= 3.7 use get_running_loop()
         loop = asyncio.get_event_loop()
         files = [
             file_.parts[-1]
@@ -1497,6 +1498,10 @@ async def import_(args, config):
         verify_ssl=not args.disable_verify_ssl,
     )
 
+    if not await obs.authorized(project, package):
+        print("No authorization to access project or package in build service")
+        sys.exit(-1)
+
     git = Git(repository, config["git"]["prefix"])
     if not git.exists():
         print("Local git repository is not valid")
@@ -1734,6 +1739,7 @@ def main():
         args.func(args)
     else:
         config = read_config(args.config)
+        # TODO: For Python >= 3.7 use get_running_loop()
         loop = asyncio.get_event_loop()
         loop.run_until_complete(args.func(args, config))
         loop.close()
